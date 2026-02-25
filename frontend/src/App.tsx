@@ -1,87 +1,56 @@
-import { useState } from 'react'
-import { Save } from 'lucide-react'
-import toast from 'react-hot-toast'
+import React from 'react'
+import { Routes, Route, NavLink } from 'react-router-dom'
+import { LayoutDashboard, Shield, Activity, Settings as SettingsIcon } from 'lucide-react'
+import { Dashboard } from './pages/Dashboard'
+import { RulesPage } from './pages/RulesPage'
+import { CountersPage } from './pages/CountersPage'
+import { Settings } from './pages/Settings'
 
-export function Settings() {
-  const [apiKey, setApiKey] = useState(
-    import.meta.env.VITE_API_KEY ?? 'dev-insecure-key-change-in-production'
-  )
-  const [darkMode, setDarkMode] = useState(
-    document.documentElement.classList.contains('dark')
-  )
-
-  function saveApiKey() {
-    // In a real app this would persist to localStorage or re-initialize the Axios client.
-    toast.success('API key updated for this session')
-  }
-
-  function toggleDark() {
-    const next = !darkMode
-    setDarkMode(next)
-    document.documentElement.classList.toggle('dark', next)
-  }
-
+function NavItem({ to, icon: Icon, label }: { to: string; icon: React.ElementType; label: string }) {
   return (
-    <div className="p-6 space-y-6 max-w-2xl">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Settings</h1>
-        <p className="text-sm text-gray-500 mt-1">Configure the control plane client</p>
-      </div>
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `flex items-center gap-3 px-3 py-2 rounded-md transition-colors ${
+          isActive
+            ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400'
+            : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'
+        }`
+      }
+    >
+      <Icon size={20} />
+      <span className="font-medium">{label}</span>
+    </NavLink>
+  )
+}
 
-      <div className="card p-6 space-y-5">
-        <h2 className="font-semibold text-gray-900 dark:text-gray-100">Authentication</h2>
-        <div>
-          <label className="label">API Key (Bearer Token)</label>
-          <div className="flex gap-2">
-            <input
-              type="password"
-              className="input"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Enter API key"
-            />
-            <button className="btn-primary flex-shrink-0" onClick={saveApiKey}>
-              <Save size={16} />
-              Save
-            </button>
+export default function App() {
+  return (
+    <div className="flex min-h-screen bg-gray-50 dark:bg-gray-900">
+      <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex-shrink-0 fixed h-full">
+        <div className="p-6 flex items-center gap-3">
+          <div className="bg-blue-600 p-2 rounded-lg">
+            <Shield className="text-white" size={24} />
           </div>
-          <p className="text-xs text-gray-400 mt-1.5">
-            Set via <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">VITE_API_KEY</code> env var or enter above. Sent as <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">Authorization: Bearer &lt;key&gt;</code>.
-          </p>
+          <span className="font-bold text-xl text-gray-900 dark:text-white">Firewall</span>
         </div>
-      </div>
 
-      <div className="card p-6 space-y-4">
-        <h2 className="font-semibold text-gray-900 dark:text-gray-100">Appearance</h2>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Dark Mode</p>
-            <p className="text-xs text-gray-400 mt-0.5">Toggle between light and dark theme</p>
-          </div>
-          <button
-            onClick={toggleDark}
-            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-              darkMode ? 'bg-blue-600' : 'bg-gray-300'
-            }`}
-          >
-            <span
-              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
-                darkMode ? 'translate-x-5' : 'translate-x-0'
-              }`}
-            />
-          </button>
-        </div>
-      </div>
+        <nav className="px-4 space-y-1">
+          <NavItem to="/" icon={LayoutDashboard} label="Dashboard" />
+          <NavItem to="/rules" icon={Shield} label="Rules" />
+          <NavItem to="/counters" icon={Activity} label="Counters" />
+          <NavItem to="/settings" icon={SettingsIcon} label="Settings" />
+        </nav>
+      </aside>
 
-      <div className="card p-6 space-y-2">
-        <h2 className="font-semibold text-gray-900 dark:text-gray-100">About</h2>
-        <p className="text-sm text-gray-500">Firewall Manager v1.0.0</p>
-        <p className="text-xs text-gray-400">
-          Control plane for Linux iptables. Rules are applied atomically via{' '}
-          <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">iptables-restore</code>.
-          No raw iptables commands are constructed from user input.
-        </p>
-      </div>
+      <main className="flex-1 ml-64">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/rules" element={<RulesPage />} />
+          <Route path="/counters" element={<CountersPage />} />
+          <Route path="/settings" element={<Settings />} />
+        </Routes>
+      </main>
     </div>
   )
 }

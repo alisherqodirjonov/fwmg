@@ -11,6 +11,7 @@ type Config struct {
 	DBPath         string
 	APIKey         string
 	AllowedOrigins []string
+	FrontendPath   string
 }
 
 func loadConfig() Config {
@@ -39,11 +40,17 @@ func loadConfig() Config {
 		env = "development"
 	}
 
+	frontendPath := os.Getenv("FRONTEND_PATH")
+	if frontendPath == "" {
+		frontendPath = "../frontend/dist"
+	}
+
 	return Config{
 		Port:           port,
 		Env:            env,
 		DBPath:         dbPath,
 		APIKey:         apiKey,
 		AllowedOrigins: strings.Split(origins, ","),
+		FrontendPath:   frontendPath,
 	}
 }

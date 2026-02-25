@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -65,11 +66,12 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
+	// Public health endpoint (no auth) so UI and load-checkers can probe status.
+	router.GET("/api/health", handlers.HealthHandler)
+
 	api := router.Group("/api")
 	api.Use(middleware.Auth(cfg.APIKey))
 	{
-		api.GET("/health", handlers.HealthHandler)
-
 		rules := api.Group("/rules")
 		{
 			rules.GET("", ruleHandler.List)
@@ -81,6 +83,22 @@ func main() {
 		api.POST("/apply", firewallHandler.Apply)
 		api.POST("/rollback", firewallHandler.Rollback)
 		api.GET("/counters", firewallHandler.Counters)
+	}
+
+	// If a built frontend exists, serve it from / so visiting the server shows the UI.
+	// This is helpful for single-host deployments or testing a built frontend.
+	if fi, err := os.Stat(cfg.FrontendPath); err == nil && fi.IsDir() {
+		log.WithField("path", cfg.FrontendPath).Info("serving built frontend from dist")
+		// Serve static files via NoRoute to avoid wildcard conflict with /api
+		router.NoRoute(func(c *gin.Context) {
+			path := c.Request.URL.Path
+			file := filepath.Join(cfg.FrontendPath, path)
+			if info, err := os.Stat(file); err == nil && !info.IsDir() {
+				c.File(file)
+				return
+			}
+			c.File(filepath.Join(cfg.FrontendPath, "index.html"))
+		})
 	}
 
 	srv := &http.Server{

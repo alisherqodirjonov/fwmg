@@ -259,7 +259,10 @@ export function RulesPage() {
         <EditRuleModal
           rule={editTarget}
           onClose={() => setEditTarget(null)}
-          onSubmit={(payload) => updateRule(editTarget.id, payload)}
+          onSubmit={async (payload) => {
+            await updateRule(editTarget.id, payload)
+            // setEditTarget(null)
+          }}
         />
       )}
     </div>
