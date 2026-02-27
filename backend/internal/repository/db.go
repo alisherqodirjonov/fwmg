@@ -40,6 +40,55 @@ func Migrate(db *sql.DB) error {
 			description TEXT NOT NULL DEFAULT '',
 			applied_at  DATETIME NOT NULL
 		);
+
+		CREATE TABLE IF NOT EXISTS firewall_config (
+			id              TEXT PRIMARY KEY,
+			ip_forwarding   INTEGER NOT NULL DEFAULT 0,
+			nat_enabled     INTEGER NOT NULL DEFAULT 0,
+			created_at      DATETIME NOT NULL,
+			updated_at      DATETIME NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS network_interfaces (
+			id          TEXT PRIMARY KEY,
+			name        TEXT NOT NULL UNIQUE,
+			zone        TEXT NOT NULL DEFAULT 'public',
+			enabled     INTEGER NOT NULL DEFAULT 1,
+			notes       TEXT NOT NULL DEFAULT '',
+			created_at  DATETIME NOT NULL,
+			updated_at  DATETIME NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS zones (
+			id          TEXT PRIMARY KEY,
+			name        TEXT NOT NULL UNIQUE,
+			description TEXT NOT NULL DEFAULT '',
+			target      TEXT NOT NULL DEFAULT 'REJECT',
+			in_policy   TEXT NOT NULL DEFAULT 'REJECT',
+			out_policy  TEXT NOT NULL DEFAULT 'ACCEPT',
+			created_at  DATETIME NOT NULL,
+			updated_at  DATETIME NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS nat_rules (
+			id              TEXT PRIMARY KEY,
+			name            TEXT NOT NULL,
+			type            TEXT NOT NULL,
+			protocol        TEXT NOT NULL DEFAULT 'all',
+			in_interface    TEXT NOT NULL DEFAULT '',
+			out_interface   TEXT NOT NULL DEFAULT '',
+			source_ip       TEXT NOT NULL DEFAULT '',
+			source_port     TEXT NOT NULL DEFAULT '',
+			dest_ip         TEXT NOT NULL DEFAULT '',
+			dest_port       TEXT NOT NULL DEFAULT '',
+			natto_ip        TEXT NOT NULL DEFAULT '',
+			natto_port      TEXT NOT NULL DEFAULT '',
+			comment         TEXT NOT NULL DEFAULT '',
+			enabled         INTEGER NOT NULL DEFAULT 1,
+			position        INTEGER NOT NULL DEFAULT 0,
+			created_at      DATETIME NOT NULL,
+			updated_at      DATETIME NOT NULL
+		);
 	`)
 	return err
 }

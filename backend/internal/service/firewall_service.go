@@ -51,10 +51,12 @@ type FirewallService interface {
 }
 
 type firewallService struct {
-	rules   repository.RuleRepository
-	history repository.HistoryRepository
-	driver  firewall.FirewallDriver
-	log     *logrus.Logger
+	rules    repository.RuleRepository
+	history  repository.HistoryRepository
+	config   repository.ConfigRepository
+	natRules repository.NATRuleRepository
+	driver   firewall.FirewallDriver
+	log      *logrus.Logger
 }
 
 func NewFirewallService(
@@ -68,6 +70,24 @@ func NewFirewallService(
 		history: history,
 		driver:  driver,
 		log:     log,
+	}
+}
+
+func NewFirewallServiceWithConfig(
+	rules repository.RuleRepository,
+	history repository.HistoryRepository,
+	config repository.ConfigRepository,
+	natRules repository.NATRuleRepository,
+	driver firewall.FirewallDriver,
+	log *logrus.Logger,
+) FirewallService {
+	return &firewallService{
+		rules:    rules,
+		history:  history,
+		config:   config,
+		natRules: natRules,
+		driver:   driver,
+		log:      log,
 	}
 }
 
@@ -157,6 +177,26 @@ func (s *firewallService) ApplyRules(_ context.Context) error {
 
 	if err := s.driver.Apply(rules); err != nil {
 		return fmt.Errorf("apply rules to kernel: %w", err)
+	}
+
+	// Apply firewall configuration (IP forwarding, etc.)
+	if s.config != nil {
+		cfg, err := s.config.Get()
+		if err != nil {
+			s.log.WithError(err).Warn("could not load firewall config")
+		} else if err := s.driver.ApplyConfig(cfg); err != nil {
+			s.log.WithError(err).Warn("failed to apply firewall config")
+		}
+	}
+
+	// Apply NAT rules if enabled
+	if s.natRules != nil {
+		natRules, err := s.natRules.List()
+		if err != nil {
+			s.log.WithError(err).Warn("could not load NAT rules")
+		} else if err := s.driver.ApplyNAT(natRules); err != nil {
+			s.log.WithError(err).Warn("failed to apply NAT rules")
+		}
 	}
 
 	// Persist snapshot to history after successful apply.

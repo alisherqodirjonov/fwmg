@@ -46,13 +46,25 @@ func main() {
 
 	ruleRepo := repository.NewRuleRepository(db)
 	historyRepo := repository.NewHistoryRepository(db)
+	configRepo := repository.NewConfigRepository(db)
+	ifaceRepo := repository.NewInterfaceRepository(db)
+	zoneRepo := repository.NewZoneRepository(db)
+	natRuleRepo := repository.NewNATRuleRepository(db)
 
 	driver := firewall.NewIptablesDriver(log)
 
-	fwService := service.NewFirewallService(ruleRepo, historyRepo, driver, log)
+	fwService := service.NewFirewallServiceWithConfig(ruleRepo, historyRepo, configRepo, natRuleRepo, driver, log)
+	configService := service.NewConfigService(configRepo, log)
+	interfaceService := service.NewInterfaceService(ifaceRepo, log)
+	zoneService := service.NewZoneService(zoneRepo, log)
+	natRuleService := service.NewNATRuleService(natRuleRepo, log)
 
 	ruleHandler := handlers.NewRuleHandler(fwService, log)
 	firewallHandler := handlers.NewFirewallHandler(fwService, log)
+	configHandler := handlers.NewConfigHandler(configService, log)
+	interfaceHandler := handlers.NewInterfaceHandler(interfaceService, log)
+	zoneHandler := handlers.NewZoneHandler(zoneService, log)
+	natRuleHandler := handlers.NewNATRuleHandler(natRuleService, log)
 
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -78,6 +90,36 @@ func main() {
 			rules.POST("", ruleHandler.Create)
 			rules.PUT("/:id", ruleHandler.Update)
 			rules.DELETE("/:id", ruleHandler.Delete)
+		}
+
+		config := api.Group("/config")
+		{
+			config.GET("", configHandler.GetConfig)
+			config.POST("", configHandler.UpdateConfig)
+		}
+
+		interfaces := api.Group("/interfaces")
+		{
+			interfaces.GET("", interfaceHandler.List)
+			interfaces.POST("", interfaceHandler.Create)
+			interfaces.PUT("/:id", interfaceHandler.Update)
+			interfaces.DELETE("/:id", interfaceHandler.Delete)
+		}
+
+		zones := api.Group("/zones")
+		{
+			zones.GET("", zoneHandler.List)
+			zones.POST("", zoneHandler.Create)
+			zones.PUT("/:id", zoneHandler.Update)
+			zones.DELETE("/:id", zoneHandler.Delete)
+		}
+
+		natRules := api.Group("/nat-rules")
+		{
+			natRules.GET("", natRuleHandler.List)
+			natRules.POST("", natRuleHandler.Create)
+			natRules.PUT("/:id", natRuleHandler.Update)
+			natRules.DELETE("/:id", natRuleHandler.Delete)
 		}
 
 		api.POST("/apply", firewallHandler.Apply)

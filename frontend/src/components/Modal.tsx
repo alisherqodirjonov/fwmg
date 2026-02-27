@@ -5,16 +5,23 @@ interface Props {
   title: string
   onClose: () => void
   children: React.ReactNode
+  isOpen?: boolean
 }
 
-export function Modal({ title, onClose, children }: Props) {
+export function Modal({ title, onClose, children, isOpen = true }: Props) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose()
     }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
+    if (isOpen) {
+      document.addEventListener('keydown', onKey)
+      return () => document.removeEventListener('keydown', onKey)
+    }
+  }, [onClose, isOpen])
+
+  if (!isOpen) {
+    return null
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
