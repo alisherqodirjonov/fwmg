@@ -48,6 +48,9 @@ type FirewallService interface {
 	ApplyRules(ctx context.Context) error
 	Rollback(ctx context.Context) error
 	GetCounters(ctx context.Context) ([]*models.Counter, error)
+	GetInterfaces(ctx context.Context) ([]*models.Interface, error)
+	GetInterfaceCounters(ctx context.Context, iface string) (*models.InterfaceCounters, error)
+	GetAggregatedCounters(ctx context.Context) (*models.InterfaceCounters, error)
 }
 
 type firewallService struct {
@@ -266,4 +269,37 @@ func validateDTO(chain models.Chain, proto models.Protocol, action models.Action
 	}
 
 	return nil
+}
+
+func (s *firewallService) GetInterfaces(_ context.Context) ([]*models.Interface, error) {
+	return s.driver.GetInterfaces()
+}
+
+func (s *firewallService) GetInterfaceCounters(_ context.Context, iface string) (*models.InterfaceCounters, error) {
+	return s.driver.GetInterfaceCounters(iface)
+}
+
+func (s *firewallService) GetAggregatedCounters(ctx context.Context) (*models.InterfaceCounters, error) {
+	interfaces, err := s.driver.GetInterfaces()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get interfaces for aggregation: %w", err)
+	}
+
+	totalCounters := &models.InterfaceCounters{}
+
+	for _, iface := range interfaces {
+		counters, err := s.driver.GetInterfaceCounters(iface.Name)
+		if err != nil {
+			s.log.WithError(err).WithField("interface", iface.Name).Warn("failed to get counters for interface")
+			continue
+		}
+		totalCounters.In.Packets += counters.In.Packets
+		totalCounters.In.Bytes += counters.In.Bytes
+		totalCounters.Out.Packets += counters.Out.Packets
+		totalCounters.Out.Bytes += counters.Out.Bytes
+		totalCounters.Drop.Packets += counters.Drop.Packets
+		totalCounters.Drop.Bytes += counters.Drop.Bytes
+	}
+
+	return totalCounters, nil
 }

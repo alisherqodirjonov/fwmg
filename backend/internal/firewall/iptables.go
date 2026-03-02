@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -83,11 +84,29 @@ func (d *IptablesDriver) ApplyConfig(config *models.FirewallConfig) error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		// Non-critical error - log but don't fail
-		d.log.WithError(err).WithField("value", ipForwardVal).Warn("failed to set ip_forward via sysctl")
+		d.log.WithError(err).WithField("value", ipForwardVal).Error("failed to set ip_forward via sysctl")
+		return fmt.Errorf("failed to apply IP forwarding config: %w", err)
 	}
 
-	d.log.WithField("ip_forwarding", config.IPForwarding).Info("IP forwarding configuration applied")
+	// Verify the setting was actually applied
+	cmd = exec.CommandContext(ctx, "/sbin/sysctl", "-n", "net.ipv4.ip_forward")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		d.log.WithError(err).Warn("failed to verify IP forwarding setting")
+	} else {
+		actualVal := strings.TrimSpace(out.String())
+		if actualVal != ipForwardVal {
+			d.log.WithFields(logrus.Fields{
+				"expected": ipForwardVal,
+				"actual":   actualVal,
+			}).Warn("IP forwarding value mismatch after sysctl set")
+		}
+	}
+
+	d.log.WithField("ip_forwarding", config.IPForwarding).Info("IP forwarding configuration applied successfully")
 	return nil
 }
 
@@ -135,8 +154,12 @@ func (d *IptablesDriver) flushNATTable() error {
 }
 
 // buildNATRuleset produces iptables rules for the nat table
+// It handles both SNAT (Source NAT - modifies source IP) and DNAT (Destination NAT - modifies dest IP):
+// - SNAT rules are applied in POSTROUTING chain (outgoing packets): changes source IP before sending
+// - DNAT rules are applied in PREROUTING chain (incoming packets): changes destination IP upon arrival
 func (d *IptablesDriver) buildNATRuleset(natRules []*models.NATRule) string {
 	var sb strings.Builder
+	var snatCount, dnatCount int
 
 	// Start nat table section
 	sb.WriteString("*nat\n")
@@ -147,6 +170,10 @@ func (d *IptablesDriver) buildNATRuleset(natRules []*models.NATRule) string {
 
 	for _, nr := range natRules {
 		if !nr.Enabled {
+			d.log.WithFields(logrus.Fields{
+				"rule_id": nr.ID,
+				"name":    nr.Name,
+			}).Debug("NAT rule disabled, skipping")
 			continue
 		}
 
@@ -155,13 +182,21 @@ func (d *IptablesDriver) buildNATRuleset(natRules []*models.NATRule) string {
 
 		// Determine chain and target based on NAT type
 		if nr.Type == "SNAT" {
+			// SNAT: Change source IP of outgoing packets in POSTROUTING
 			chain = "POSTROUTING"
 			target = "SNAT"
+			snatCount++
 		} else if nr.Type == "DNAT" {
+			// DNAT: Change destination IP of incoming packets in PREROUTING
 			chain = "PREROUTING"
 			target = "DNAT"
+			dnatCount++
 		} else {
-			d.log.WithField("rule_id", nr.ID).Warn("invalid NAT type, skipping")
+			d.log.WithFields(logrus.Fields{
+				"rule_id": nr.ID,
+				"name":    nr.Name,
+				"type":    nr.Type,
+			}).Error("invalid NAT type, must be SNAT or DNAT")
 			continue
 		}
 
@@ -169,23 +204,45 @@ func (d *IptablesDriver) buildNATRuleset(natRules []*models.NATRule) string {
 		if line != "" {
 			sb.WriteString(line)
 			sb.WriteString("\n")
+		} else {
+			d.log.WithFields(logrus.Fields{
+				"rule_id": nr.ID,
+				"name":    nr.Name,
+				"type":    nr.Type,
+			}).Warn("failed to generate iptables rule, rule will be skipped")
 		}
 	}
 
 	sb.WriteString("COMMIT\n")
+	d.log.WithFields(logrus.Fields{
+		"snat_rules": snatCount,
+		"dnat_rules": dnatCount,
+		"total":      snatCount + dnatCount,
+	}).Info("NAT ruleset built successfully")
 	return sb.String()
 }
 
 // natRuleToLine converts a NATRule to an iptables rule line
+// Routes to specialized methods for SNAT vs DNAT
 func (d *IptablesDriver) natRuleToLine(nr *models.NATRule, chain, target string) string {
+	switch target {
+	case "SNAT":
+		return d.buildSNATRule(nr, chain)
+	case "DNAT":
+		return d.buildDNATRule(nr, chain)
+	default:
+		return ""
+	}
+}
+
+// buildSNATRule creates an SNAT rule for source IP translation
+// SNAT modifies the source IP of outgoing packets (POSTROUTING chain)
+func (d *IptablesDriver) buildSNATRule(nr *models.NATRule, chain string) string {
 	var parts []string
 
 	parts = append(parts, "-A", chain)
 
-	// Interface matching
-	if nr.InInterface != "" && sanitizeInterface(nr.InInterface) != "" {
-		parts = append(parts, "-i", sanitizeInterface(nr.InInterface))
-	}
+	// Outgoing interface (where packets leave)
 	if nr.OutInterface != "" && sanitizeInterface(nr.OutInterface) != "" {
 		parts = append(parts, "-o", sanitizeInterface(nr.OutInterface))
 	}
@@ -196,24 +253,64 @@ func (d *IptablesDriver) natRuleToLine(nr *models.NATRule, chain, target string)
 		parts = append(parts, "-p", proto)
 	}
 
-	// Source IP
+	// Match packets FROM this source IP
 	if src := sanitizeCIDR(nr.SourceIP); src != "" {
 		parts = append(parts, "-s", src)
 	}
 
-	// Source port
+	// Match packets FROM this source port (only for TCP/UDP)
 	if nr.SourcePort != "" && proto != "" && proto != "icmp" && proto != "all" {
 		if port := sanitizePort(nr.SourcePort); port != "" {
 			parts = append(parts, "--sport", port)
 		}
 	}
 
-	// Destination IP
+	// Comment
+	if nr.Comment != "" {
+		comment := sanitizeComment(nr.Comment)
+		if comment != "" {
+			parts = append(parts, "-m", "comment", "--comment", comment)
+		}
+	}
+
+	// Build SNAT target (translate to new source IP)
+	snatTarget := d.buildSNATTarget(nr)
+	if snatTarget == "" {
+		d.log.WithFields(logrus.Fields{
+			"rule_id": nr.ID,
+			"name":    nr.Name,
+		}).Warn("SNAT rule missing target IP, skipping")
+		return ""
+	}
+
+	parts = append(parts, "-j", "SNAT", "--to-source="+snatTarget)
+	return strings.Join(parts, " ")
+}
+
+// buildDNATRule creates a DNAT rule for destination IP translation
+// DNAT modifies the destination IP of incoming packets (PREROUTING chain)
+func (d *IptablesDriver) buildDNATRule(nr *models.NATRule, chain string) string {
+	var parts []string
+
+	parts = append(parts, "-A", chain)
+
+	// Incoming interface (where packets arrive)
+	if nr.InInterface != "" && sanitizeInterface(nr.InInterface) != "" {
+		parts = append(parts, "-i", sanitizeInterface(nr.InInterface))
+	}
+
+	// Protocol
+	proto := sanitizeProtocol(nr.Protocol)
+	if proto != "" && proto != "all" {
+		parts = append(parts, "-p", proto)
+	}
+
+	// Match packets TO this destination IP
 	if dst := sanitizeCIDR(nr.DestIP); dst != "" {
 		parts = append(parts, "-d", dst)
 	}
 
-	// Destination port
+	// Match packets TO this destination port (only for TCP/UDP)
 	if nr.DestPort != "" && proto != "" && proto != "icmp" && proto != "all" {
 		if port := sanitizePort(nr.DestPort); port != "" {
 			parts = append(parts, "--dport", port)
@@ -228,47 +325,52 @@ func (d *IptablesDriver) natRuleToLine(nr *models.NATRule, chain, target string)
 		}
 	}
 
-	// NAT target
-	var natTarget string
-	if target == "SNAT" {
-		ntIP := sanitizeCIDR(nr.NATtoIP)
-		if ntIP == "" {
-			d.log.WithField("rule_id", nr.ID).Warn("SNAT rule missing target IP")
-			return ""
-		}
-		ntPort := ""
-		if nr.NATtoPort != "" {
-			ntPort = sanitizePort(nr.NATtoPort)
-		}
-		if ntPort != "" {
-			natTarget = ntIP + ":" + ntPort
-		} else {
-			natTarget = ntIP
-		}
-	} else if target == "DNAT" {
-		ntIP := sanitizeCIDR(nr.NATtoIP)
-		if ntIP == "" {
-			d.log.WithField("rule_id", nr.ID).Warn("DNAT rule missing target IP")
-			return ""
-		}
-		ntPort := ""
-		if nr.NATtoPort != "" {
-			ntPort = sanitizePort(nr.NATtoPort)
-		}
-		if ntPort != "" {
-			natTarget = ntIP + ":" + ntPort
-		} else {
-			natTarget = ntIP
-		}
-	}
-
-	if natTarget == "" {
+	// Build DNAT target (redirect to internal IP)
+	dnatTarget := d.buildDNATTarget(nr)
+	if dnatTarget == "" {
+		d.log.WithFields(logrus.Fields{
+			"rule_id": nr.ID,
+			"name":    nr.Name,
+		}).Warn("DNAT rule missing target IP, skipping")
 		return ""
 	}
 
-	parts = append(parts, "-j", target, "--to-destination="+natTarget)
-
+	parts = append(parts, "-j", "DNAT", "--to-destination="+dnatTarget)
 	return strings.Join(parts, " ")
+}
+
+// buildSNATTarget constructs the target IP:port for SNAT rules
+// Returns IP[:port] for use with --to-source flag
+func (d *IptablesDriver) buildSNATTarget(nr *models.NATRule) string {
+	ntIP := sanitizeCIDR(nr.NATtoIP)
+	if ntIP == "" {
+		return ""
+	}
+
+	// Build target with optional port
+	if nr.NATtoPort != "" {
+		if port := sanitizePort(nr.NATtoPort); port != "" {
+			return ntIP + ":" + port
+		}
+	}
+	return ntIP
+}
+
+// buildDNATTarget constructs the target IP:port for DNAT rules
+// Returns IP[:port] for use with --to-destination flag
+func (d *IptablesDriver) buildDNATTarget(nr *models.NATRule) string {
+	ntIP := sanitizeCIDR(nr.NATtoIP)
+	if ntIP == "" {
+		return ""
+	}
+
+	// Build target with optional port
+	if nr.NATtoPort != "" {
+		if port := sanitizePort(nr.NATtoPort); port != "" {
+			return ntIP + ":" + port
+		}
+	}
+	return ntIP
 }
 
 // GetCounters reads counters from the live ruleset using iptables-save.
@@ -278,6 +380,116 @@ func (d *IptablesDriver) GetCounters() ([]*models.Counter, error) {
 		return nil, err
 	}
 	return d.parseCounters(raw), nil
+}
+
+// GetInterfaces returns a list of network interfaces on the system.
+func (d *IptablesDriver) GetInterfaces() ([]*models.Interface, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get system network interfaces: %w", err)
+	}
+
+	var out []*models.Interface
+	for _, i := range ifaces {
+		out = append(out, &models.Interface{Name: i.Name})
+	}
+
+	return out, nil
+}
+
+// GetInterfaceCounters returns counters for a specific interface.
+func (d *IptablesDriver) GetInterfaceCounters(iface string) (*models.InterfaceCounters, error) {
+	sIface := sanitizeInterface(iface)
+	if sIface == "" {
+		return nil, fmt.Errorf("invalid interface name provided")
+	}
+
+	counters := &models.InterfaceCounters{}
+
+	// Get INPUT chain counters
+	inCounters, err := d.getChainCounters("INPUT", "in", sIface)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get INPUT counters for %s: %w", sIface, err)
+	}
+	counters.In = inCounters
+
+	// Get OUTPUT chain counters
+	outCounters, err := d.getChainCounters("OUTPUT", "out", sIface)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get OUTPUT counters for %s: %w", sIface, err)
+	}
+	counters.Out = outCounters
+	
+	// Get FORWARD chain drop counters
+	dropCounters, err := d.getChainCounters("FORWARD", "any", sIface)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get FORWARD counters for %s: %w", sIface, err)
+	}
+	counters.Drop = dropCounters
+
+	return counters, nil
+}
+
+// getChainCounters executes `iptables -L <chain> -v -n` and parses the byte/packet counts.
+func (d *IptablesDriver) getChainCounters(chain, direction, iface string) (models.CounterStats, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := []string{"-L", chain, "-v", "-n"}
+	if direction == "in" {
+		args = append(args, "-i", iface)
+	} else if direction == "out" {
+		args = append(args, "-o", iface)
+	}
+
+	cmd := exec.CommandContext(ctx, "/sbin/iptables", args...)
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		// some old iptables versions complain if you filter by interface on a chain that doesn't have any rules for it.
+		// we can ignore this error and return zero counters.
+		if strings.Contains(stderr.String(), "No such file or directory") {
+			return models.CounterStats{}, nil
+		}
+		return models.CounterStats{}, fmt.Errorf("iptables -L failed for %s on %s: %w — %s", chain, iface, err, stderr.String())
+	}
+
+	return d.parseInterfaceCounters(out.String()), nil
+}
+
+// parseInterfaceCounters parses the verbose output of `iptables -L -v -n`.
+func (d *IptablesDriver) parseInterfaceCounters(raw string) models.CounterStats {
+	lines := strings.Split(raw, "\n")
+	var totalPkts, totalBytes uint64
+
+	// Skip header lines
+	for _, line := range lines[2:] {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		pkts, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			d.log.WithError(err).WithField("line", line).Warn("failed to parse packet count")
+			continue
+		}
+		totalPkts += pkts
+
+		bytes, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			d.log.WithError(err).WithField("line", line).Warn("failed to parse byte count")
+			continue
+		}
+		totalBytes += bytes
+	}
+
+	return models.CounterStats{
+		Packets: totalPkts,
+		Bytes:   totalBytes,
+	}
 }
 
 // buildRuleset produces an iptables-save-compatible text block from abstract rules.

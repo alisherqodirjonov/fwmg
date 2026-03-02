@@ -14,6 +14,8 @@ import type {
   UpdateInterfacePayload,
   CreateZonePayload,
   UpdateZonePayload,
+  Interface,
+  InterfaceCounters,
 } from '../types'
 
 const API_KEY = import.meta.env.VITE_API_KEY ?? 'dev-insecure-key-change-in-production'
@@ -148,5 +150,20 @@ export const api = {
   health: async (): Promise<{ status: string }> => {
     const res = await client.get<{ status: string }>('/health')
     return res.data
+  },
+
+  getCounterInterfaces: async (): Promise<Interface[]> => {
+    const res = await client.get<{ interfaces: Interface[] }>('/counters/interfaces')
+    return res.data.interfaces ?? []
+  },
+
+  getInterfaceCounters: async (iface: string): Promise<InterfaceCounters> => {
+    const res = await client.get<{ counters: InterfaceCounters }>(`/counters/interfaces/${iface}`)
+    return res.data.counters
+  },
+
+  getAggregatedCounters: async (): Promise<InterfaceCounters> => {
+    const res = await client.get<{ counters: InterfaceCounters }>(`/counters/aggregate`)
+    return res.data.counters
   },
 }

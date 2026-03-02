@@ -15,6 +15,12 @@ type FirewallDriver interface {
 	// GetCounters returns per-chain/rule packet and byte counters.
 	GetCounters() ([]*models.Counter, error)
 
+	// GetInterfaces returns a list of network interfaces.
+	GetInterfaces() ([]*models.Interface, error)
+
+	// GetInterfaceCounters returns counters for a specific interface.
+	GetInterfaceCounters(iface string) (*models.InterfaceCounters, error)
+
 	// ApplyConfig applies firewall configuration (IP forwarding, etc)
 	ApplyConfig(config *models.FirewallConfig) error
 

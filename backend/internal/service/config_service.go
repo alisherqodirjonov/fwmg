@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/firewall-manager/backend/internal/firewall"
 	"github.com/firewall-manager/backend/internal/models"
+	"github.com/firewall-manager/backend/internal/network"
 	"github.com/firewall-manager/backend/internal/repository"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
@@ -25,12 +27,14 @@ type ConfigService interface {
 
 type configService struct {
 	configRepo repository.ConfigRepository
+	driver     firewall.FirewallDriver
 	log        *logrus.Logger
 }
 
-func NewConfigService(configRepo repository.ConfigRepository, log *logrus.Logger) ConfigService {
+func NewConfigService(configRepo repository.ConfigRepository, driver firewall.FirewallDriver, log *logrus.Logger) ConfigService {
 	return &configService{
 		configRepo: configRepo,
+		driver:     driver,
 		log:        log,
 	}
 }
@@ -49,9 +53,23 @@ func (s *configService) UpdateConfig(ctx context.Context, dto ConfigUpdateDTO) (
 	cfg.NATEnabled = dto.NATEnabled
 	cfg.UpdatedAt = time.Now()
 
+	// First save the configuration to the database
 	if err := s.configRepo.Update(cfg); err != nil {
+		s.log.WithError(err).Error("failed to save config to database")
 		return nil, err
 	}
+
+	// Then immediately apply the configuration to the system (e.g., sysctl for IP forwarding)
+	if err := s.driver.ApplyConfig(cfg); err != nil {
+		s.log.WithError(err).Error("failed to apply firewall config to system")
+		// Log the error but don't fail the update - config is saved, just not applied yet
+		return cfg, fmt.Errorf("config saved but failed to apply: %w", err)
+	}
+
+	s.log.WithFields(logrus.Fields{
+		"ip_forwarding": cfg.IPForwarding,
+		"nat_enabled":   cfg.NATEnabled,
+	}).Info("firewall configuration updated and applied successfully")
 
 	return cfg, nil
 }
@@ -62,6 +80,9 @@ type CreateInterfaceDTO struct {
 	Zone    string `json:"zone" binding:"required"`
 	Enabled bool   `json:"enabled"`
 	Notes   string `json:"notes"`
+	IP      string `json:"ip"`
+	Mask    string `json:"mask"`
+	Gateway string `json:"gateway"`
 }
 
 type UpdateInterfaceDTO struct {
@@ -69,10 +90,22 @@ type UpdateInterfaceDTO struct {
 	Zone    string `json:"zone"`
 	Enabled bool   `json:"enabled"`
 	Notes   string `json:"notes"`
+	IP      string `json:"ip"`
+	Mask    string `json:"mask"`
+	Gateway string `json:"gateway"`
+}
+
+// InterfaceWithStatus combines DB model with live system info
+type InterfaceWithStatus struct {
+	*models.NetworkInterface
+	IP      string `json:"ip"`
+	Mask    string `json:"mask"`
+	Gateway string `json:"gateway"`
+	MAC     string `json:"mac"`
 }
 
 type InterfaceService interface {
-	ListInterfaces(ctx context.Context) ([]*models.NetworkInterface, error)
+	ListInterfaces(ctx context.Context) ([]InterfaceWithStatus, error)
 	CreateInterface(ctx context.Context, dto CreateInterfaceDTO) (*models.NetworkInterface, error)
 	UpdateInterface(ctx context.Context, id string, dto UpdateInterfaceDTO) (*models.NetworkInterface, error)
 	DeleteInterface(ctx context.Context, id string) error
@@ -80,18 +113,77 @@ type InterfaceService interface {
 
 type interfaceService struct {
 	ifaceRepo repository.InterfaceRepository
+	netDriver network.Driver
 	log       *logrus.Logger
 }
 
-func NewInterfaceService(ifaceRepo repository.InterfaceRepository, log *logrus.Logger) InterfaceService {
+func NewInterfaceService(ifaceRepo repository.InterfaceRepository, netDriver network.Driver, log *logrus.Logger) InterfaceService {
 	return &interfaceService{
 		ifaceRepo: ifaceRepo,
+		netDriver: netDriver,
 		log:       log,
 	}
 }
 
-func (s *interfaceService) ListInterfaces(ctx context.Context) ([]*models.NetworkInterface, error) {
-	return s.ifaceRepo.List()
+func (s *interfaceService) ListInterfaces(ctx context.Context) ([]InterfaceWithStatus, error) {
+	// 1. Get interfaces from DB
+	dbIfaces, err := s.ifaceRepo.List()
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Get interfaces from System
+	sysIfaces, err := s.netDriver.GetInterfaces()
+	if err != nil {
+		s.log.WithError(err).Warn("failed to get system interfaces")
+		// Continue with just DB interfaces if system fails
+	}
+
+	// 3. Merge them. System is source of truth for existence and IP.
+	// DB is source of truth for Zone and Notes.
+
+	// Map DB interfaces by name for quick lookup
+	dbMap := make(map[string]*models.NetworkInterface)
+	for _, iface := range dbIfaces {
+		dbMap[iface.Name] = iface
+	}
+
+	var result []InterfaceWithStatus
+
+	// Iterate system interfaces
+	for _, sys := range sysIfaces {
+		dbIface, exists := dbMap[sys.Name]
+
+		if !exists {
+			// Auto-create in DB if it exists on system but not in DB
+			now := time.Now()
+			newIface := &models.NetworkInterface{
+				ID:        uuid.New().String(),
+				Name:      sys.Name,
+				Zone:      "public", // Default zone
+				Enabled:   sys.Enabled,
+				Notes:     "Auto-discovered",
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if err := s.ifaceRepo.Create(newIface); err != nil {
+				s.log.WithError(err).Error("failed to auto-create interface")
+				continue
+			}
+			dbIface = newIface
+		}
+
+		// Combine data
+		result = append(result, InterfaceWithStatus{
+			NetworkInterface: dbIface,
+			IP:               sys.IP,
+			Mask:             sys.Mask,
+			Gateway:          sys.Gateway,
+			MAC:              sys.MAC,
+		})
+	}
+
+	return result, nil
 }
 
 func (s *interfaceService) CreateInterface(ctx context.Context, dto CreateInterfaceDTO) (*models.NetworkInterface, error) {
@@ -127,6 +219,11 @@ func (s *interfaceService) UpdateInterface(ctx context.Context, id string, dto U
 	}
 	iface.Enabled = dto.Enabled
 	iface.Notes = dto.Notes
+
+	// Apply config to system
+	if err := s.netDriver.ApplyConfig(iface.Name, dto.IP, dto.Mask, dto.Gateway, dto.Enabled); err != nil {
+		return nil, fmt.Errorf("failed to apply network config: %w", err)
+	}
 
 	if err := s.ifaceRepo.Update(iface); err != nil {
 		return nil, err

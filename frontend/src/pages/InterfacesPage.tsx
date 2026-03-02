@@ -1,9 +1,15 @@
 import { useState, useEffect } from 'react'
-import { Trash2, Plus, Edit2, Network } from 'lucide-react'
+import { Trash2, Plus, Edit2, Network, RefreshCw } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { api } from '../services/api'
 import { Modal } from '../components/Modal'
 import type { NetworkInterface, Zone, PolicyType } from '../types'
+
+interface ExtendedNetworkInterface extends NetworkInterface {
+  ip?: string
+  mask?: string
+  gateway?: string
+}
 
 export function InterfacesPage() {
   const [interfaces, setInterfaces] = useState<NetworkInterface[]>([])
@@ -18,6 +24,9 @@ export function InterfacesPage() {
     zone: 'public',
     enabled: true,
     notes: '',
+    ip: '',
+    mask: '',
+    gateway: '',
   })
   const [zoneFormData, setZoneFormData] = useState<{
     name: string
@@ -63,34 +72,17 @@ export function InterfacesPage() {
           zone: formData.zone,
           enabled: formData.enabled,
           notes: formData.notes,
-        })
+          ip: formData.ip,
+          mask: formData.mask,
+          gateway: formData.gateway,
+        } as any)
         setInterfaces(interfaces.map((i) => (i.id === updated.id ? updated : i)))
         toast.success('Interface updated')
-      } else {
-        const created = await api.createInterface({
-          name: formData.name,
-          zone: formData.zone,
-          enabled: formData.enabled,
-          notes: formData.notes,
-        })
-        setInterfaces([...interfaces, created])
-        toast.success('Interface created')
       }
       resetForm()
       setShowModal(false)
     } catch (error) {
       toast.error(`Save failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    }
-  }
-
-  async function handleDeleteInterface(id: string) {
-    if (!window.confirm('Delete this interface?')) return
-    try {
-      await api.deleteInterface(id)
-      setInterfaces(interfaces.filter((i) => i.id !== id))
-      toast.success('Interface deleted')
-    } catch (error) {
-      toast.error(`Delete failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
   }
 
@@ -134,6 +126,9 @@ export function InterfacesPage() {
       zone: 'public',
       enabled: true,
       notes: '',
+      ip: '',
+      mask: '',
+      gateway: '',
     })
     setEditingInterface(null)
   }
@@ -150,12 +145,16 @@ export function InterfacesPage() {
   }
 
   function openEditInterface(iface: NetworkInterface) {
+    const extendedIface = iface as ExtendedNetworkInterface
     setEditingInterface(iface)
     setFormData({
       name: iface.name,
       zone: iface.zone,
       enabled: iface.enabled,
       notes: iface.notes,
+      ip: extendedIface.ip || '',
+      mask: extendedIface.mask || '',
+      gateway: extendedIface.gateway || '',
     })
     setShowModal(true)
   }
@@ -281,14 +280,12 @@ export function InterfacesPage() {
             <p className="text-sm text-gray-500 mt-1">Manage and assign interfaces to zones</p>
           </div>
           <button
-            onClick={() => {
-              resetForm()
-              setShowModal(true)
-            }}
-            className="btn-primary flex items-center gap-2"
+            onClick={loadData}
+            className="btn-secondary flex items-center gap-2"
+            disabled={loading}
           >
-            <Plus size={16} />
-            Add Interface
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            Refresh
           </button>
         </div>
 
@@ -299,6 +296,7 @@ export function InterfacesPage() {
             </div>
           ) : (
             interfaces.map((iface) => {
+              const extendedIface = iface as ExtendedNetworkInterface
               const zone = zones.find((z) => z.name === iface.zone)
               return (
                 <div key={iface.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:shadow-md transition-shadow">
@@ -306,6 +304,14 @@ export function InterfacesPage() {
                     <div className="flex items-start justify-between">
                       <div>
                         <h3 className="font-semibold text-gray-900 dark:text-gray-100">{iface.name}</h3>
+                        <div className="text-xs text-blue-600 dark:text-blue-400 font-mono mt-0.5">
+                          {extendedIface.ip ? `${extendedIface.ip}/${extendedIface.mask}` : 'No IP assigned'}
+                        </div>
+                        {extendedIface.gateway && (
+                          <div className="text-xs text-gray-500 font-mono mt-0.5">
+                            GW: {extendedIface.gateway}
+                          </div>
+                        )}
                         {iface.notes && (
                           <p className="text-xs text-gray-500 mt-1">{iface.notes}</p>
                         )}
@@ -331,13 +337,6 @@ export function InterfacesPage() {
                         <Edit2 size={14} />
                         Edit
                       </button>
-                      <button
-                        onClick={() => handleDeleteInterface(iface.id)}
-                        className="btn-sm btn-error flex-1 inline-flex items-center justify-center gap-1"
-                      >
-                        <Trash2 size={14} />
-                        Delete
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -360,11 +359,45 @@ export function InterfacesPage() {
           <div>
             <label className="label">Interface Name</label>
             <input
+              disabled
               type="text"
-              className="input"
+              className="input opacity-75 cursor-not-allowed"
               placeholder="e.g., eth0, wlan0"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">IP Address</label>
+              <input
+                type="text"
+                className="input"
+                placeholder="e.g., 192.168.1.10"
+                value={formData.ip}
+                onChange={(e) => setFormData({ ...formData, ip: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label">Netmask / CIDR</label>
+              <input
+                type="text"
+                className="input"
+                placeholder="e.g., 24 or 255.255.255.0"
+                value={formData.mask}
+                onChange={(e) => setFormData({ ...formData, mask: e.target.value })}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="label">Gateway</label>
+            <input
+              type="text"
+              className="input"
+              placeholder="e.g., 192.168.1.1"
+              value={formData.gateway}
+              onChange={(e) => setFormData({ ...formData, gateway: e.target.value })}
             />
           </div>
 

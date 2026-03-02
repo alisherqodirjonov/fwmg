@@ -133,14 +133,55 @@ export interface CreateZonePayload {
 }
 
 export interface UpdateZonePayload {
+
   name: string
+
   description: string
+
   target: PolicyType
+
   inPolicy: PolicyType
+
   outPolicy: PolicyType
+
 }
 
+
+
 export interface ApiResponse<T> {
+
   data: T
+
   error?: string
+
+}
+
+
+
+export interface Interface {
+
+  name: string;
+
+}
+
+
+
+export interface CounterStats {
+
+  packets: number;
+
+  bytes: number;
+
+}
+
+
+
+export interface InterfaceCounters {
+
+  in: CounterStats;
+
+  out: CounterStats;
+
+  drop: CounterStats;
+
 }

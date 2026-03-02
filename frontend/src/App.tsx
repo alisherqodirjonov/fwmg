@@ -3,7 +3,6 @@ import { Sidebar } from './components/Sidebar'
 import { Dashboard } from './pages/Dashboard'
 import { RulesPage } from './pages/RulesPage'
 import { InterfacesPage } from './pages/InterfacesPage'
-import { CountersPage } from './pages/CountersPage'
 import { Settings } from './pages/Settings'
 
 export default function App() {
@@ -15,7 +14,6 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/rules" element={<RulesPage />} />
           <Route path="/interfaces" element={<InterfacesPage />} />
-          <Route path="/counters" element={<CountersPage />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
       </main>

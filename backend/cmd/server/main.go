@@ -13,6 +13,7 @@ import (
 	"github.com/firewall-manager/backend/internal/api/handlers"
 	"github.com/firewall-manager/backend/internal/api/middleware"
 	"github.com/firewall-manager/backend/internal/firewall"
+	"github.com/firewall-manager/backend/internal/network"
 	"github.com/firewall-manager/backend/internal/repository"
 	"github.com/firewall-manager/backend/internal/service"
 	"github.com/gin-contrib/cors"
@@ -44,6 +45,15 @@ func main() {
 		log.WithError(err).Fatal("failed to run migrations")
 	}
 
+	var netDriver network.Driver
+	if os.Getenv("USE_MOCK_DRIVER") == "true" {
+		log.Info("using mock network driver for development")
+		netDriver = network.NewMockDriver(log)
+	} else {
+		log.Info("using netlink network driver")
+		netDriver = network.NewNetlinkDriver(log)
+	}
+
 	ruleRepo := repository.NewRuleRepository(db)
 	historyRepo := repository.NewHistoryRepository(db)
 	configRepo := repository.NewConfigRepository(db)
@@ -54,8 +64,8 @@ func main() {
 	driver := firewall.NewIptablesDriver(log)
 
 	fwService := service.NewFirewallServiceWithConfig(ruleRepo, historyRepo, configRepo, natRuleRepo, driver, log)
-	configService := service.NewConfigService(configRepo, log)
-	interfaceService := service.NewInterfaceService(ifaceRepo, log)
+	configService := service.NewConfigService(configRepo, driver, log)
+	interfaceService := service.NewInterfaceService(ifaceRepo, netDriver, log)
 	zoneService := service.NewZoneService(zoneRepo, log)
 	natRuleService := service.NewNATRuleService(natRuleRepo, log)
 
@@ -124,7 +134,14 @@ func main() {
 
 		api.POST("/apply", firewallHandler.Apply)
 		api.POST("/rollback", firewallHandler.Rollback)
-		api.GET("/counters", firewallHandler.Counters)
+
+		counters := api.Group("/counters")
+		{
+			counters.GET("", firewallHandler.Counters)
+			counters.GET("/interfaces", firewallHandler.GetInterfaces)
+			counters.GET("/aggregate", firewallHandler.GetAggregatedCounters)
+			counters.GET("/interfaces/:interface", firewallHandler.GetInterfaceCounters)
+		}
 	}
 
 	// If a built frontend exists, serve it from / so visiting the server shows the UI.
