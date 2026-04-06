@@ -1,0 +1,71 @@
+# ========================
+# Environment & Secrets
+# ========================
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+
+# ========================
+# Database (SQLite)
+# ========================
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# ========================
+# Build Artifacts
+# ========================
+dist/
+backend/server
+frontend/dist/
+
+# ========================
+# Dependencies
+# ========================
+node_modules/
+
+# ========================
+# OS Files
+# ========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========================
+# IDE / Editor
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ========================
+# Go
+# ========================
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# ========================
+# Logs
+# ========================
+*.log
+logs/
+
+# ========================
+# Misc
+# ========================
+*.tmp
+*.bak
+*.pid
