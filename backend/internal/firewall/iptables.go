@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -42,11 +43,13 @@ func (d *IptablesDriver) Load() (string, error) {
 	return out.String(), nil
 }
 
-// Apply translates rules to iptables-save format and pipes through iptables-restore.
+// Apply translates rules, zone policies, and NAT configuration to iptables-save format and pipes
+// through iptables-restore in a single atomic call covering both the filter and nat tables.
 // This is the ONLY way rules reach the kernel — atomically, with no shell.
-func (d *IptablesDriver) Apply(rules []*models.Rule) error {
-	ruleset := d.buildRuleset(rules)
+func (d *IptablesDriver) Apply(rules []*models.Rule, zones []*models.Zone, interfaces []*models.NetworkInterface, cfg *models.FirewallConfig, natRules []*models.NATRule) error {
+	ruleset := d.buildRuleset(rules, zones, interfaces, cfg, natRules)
 	d.log.WithField("ruleset_lines", strings.Count(ruleset, "\n")).Debug("applying ruleset")
+	d.log.WithField("ruleset", ruleset).Debug("full ruleset being applied")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -342,7 +345,7 @@ func (d *IptablesDriver) buildDNATRule(nr *models.NATRule, chain string) string 
 // buildSNATTarget constructs the target IP:port for SNAT rules
 // Returns IP[:port] for use with --to-source flag
 func (d *IptablesDriver) buildSNATTarget(nr *models.NATRule) string {
-	ntIP := sanitizeCIDR(nr.NATtoIP)
+	ntIP := sanitizeNATTargetIP(nr.NATtoIP)
 	if ntIP == "" {
 		return ""
 	}
@@ -359,7 +362,7 @@ func (d *IptablesDriver) buildSNATTarget(nr *models.NATRule) string {
 // buildDNATTarget constructs the target IP:port for DNAT rules
 // Returns IP[:port] for use with --to-destination flag
 func (d *IptablesDriver) buildDNATTarget(nr *models.NATRule) string {
-	ntIP := sanitizeCIDR(nr.NATtoIP)
+	ntIP := sanitizeNATTargetIP(nr.NATtoIP)
 	if ntIP == "" {
 		return ""
 	}
@@ -397,111 +400,163 @@ func (d *IptablesDriver) GetInterfaces() ([]*models.Interface, error) {
 	return out, nil
 }
 
-// GetInterfaceCounters returns counters for a specific interface.
+// GetInterfaceCounters returns counters for a specific interface from /proc/net/dev.
 func (d *IptablesDriver) GetInterfaceCounters(iface string) (*models.InterfaceCounters, error) {
 	sIface := sanitizeInterface(iface)
 	if sIface == "" {
 		return nil, fmt.Errorf("invalid interface name provided")
 	}
 
+	return d.parseInterfaceCountersFromProc(sIface)
+}
+
+// GetChainPolicyCounters returns the global chain policy counters from iptables.
+func (d *IptablesDriver) GetChainPolicyCounters() (*models.InterfaceCounters, error) {
+	raw, err := d.Load()
+	if err != nil {
+		return nil, err
+	}
+
 	counters := &models.InterfaceCounters{}
+	lines := strings.Split(raw, "\n")
 
-	// Get INPUT chain counters
-	inCounters, err := d.getChainCounters("INPUT", "in", sIface)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get INPUT counters for %s: %w", sIface, err)
-	}
-	counters.In = inCounters
+	// Parse chain policy lines: ":INPUT ACCEPT [1234:56789]"
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, ":") {
+			continue
+		}
 
-	// Get OUTPUT chain counters
-	outCounters, err := d.getChainCounters("OUTPUT", "out", sIface)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get OUTPUT counters for %s: %w", sIface, err)
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+
+		chainName := strings.TrimPrefix(fields[0], ":")
+		pkts, bytes_ := parseCounterBracket(fields[2])
+
+		switch chainName {
+		case "INPUT":
+			counters.In = models.CounterStats{Packets: pkts, Bytes: bytes_}
+		case "OUTPUT":
+			counters.Out = models.CounterStats{Packets: pkts, Bytes: bytes_}
+		case "FORWARD":
+			counters.Drop = models.CounterStats{Packets: pkts, Bytes: bytes_}
+		}
 	}
-	counters.Out = outCounters
-	
-	// Get FORWARD chain drop counters
-	dropCounters, err := d.getChainCounters("FORWARD", "any", sIface)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get FORWARD counters for %s: %w", sIface, err)
-	}
-	counters.Drop = dropCounters
 
 	return counters, nil
 }
 
-// getChainCounters executes `iptables -L <chain> -v -n` and parses the byte/packet counts.
-func (d *IptablesDriver) getChainCounters(chain, direction, iface string) (models.CounterStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	args := []string{"-L", chain, "-v", "-n"}
-	if direction == "in" {
-		args = append(args, "-i", iface)
-	} else if direction == "out" {
-		args = append(args, "-o", iface)
+// parseInterfaceCountersFromProc reads per-interface counters from /proc/net/dev.
+// Maps RX to In (INPUT) and TX to Out (OUTPUT). Drop is set to 0 for interfaces.
+func (d *IptablesDriver) parseInterfaceCountersFromProc(iface string) (*models.InterfaceCounters, error) {
+	data, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read /proc/net/dev: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "/sbin/iptables", args...)
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
 
-	if err := cmd.Run(); err != nil {
-		// some old iptables versions complain if you filter by interface on a chain that doesn't have any rules for it.
-		// we can ignore this error and return zero counters.
-		if strings.Contains(stderr.String(), "No such file or directory") {
-			return models.CounterStats{}, nil
+		// Skip headers and empty lines
+		if !strings.Contains(line, ":") || strings.HasPrefix(line, "Inter-") || strings.HasPrefix(line, "face") {
+			continue
 		}
-		return models.CounterStats{}, fmt.Errorf("iptables -L failed for %s on %s: %w — %s", chain, iface, err, stderr.String())
+
+		// Format: "eth0: RX_packets RX_bytes ... TX_packets TX_bytes ..."
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		ifaceName := strings.TrimSpace(parts[0])
+		if ifaceName != iface {
+			continue
+		}
+
+		fields := strings.Fields(parts[1])
+		if len(fields) < 10 {
+			d.log.WithField("interface", iface).Warn("unexpected format in /proc/net/dev")
+			return &models.InterfaceCounters{}, nil
+		}
+
+		// Fields: RX_packets(0), RX_bytes(1), RX_errors(2), RX_dropped(3),
+		//         RX_fifo(4), RX_frame(5), RX_compressed(6), RX_multicast(7),
+		//         TX_packets(8), TX_bytes(9), ...
+		inPkts, _ := strconv.ParseUint(fields[0], 10, 64)
+		inBytes, _ := strconv.ParseUint(fields[1], 10, 64)
+		outPkts, _ := strconv.ParseUint(fields[8], 10, 64)
+		outBytes, _ := strconv.ParseUint(fields[9], 10, 64)
+
+		return &models.InterfaceCounters{
+			In:   models.CounterStats{Packets: inPkts, Bytes: inBytes},
+			Out:  models.CounterStats{Packets: outPkts, Bytes: outBytes},
+			Drop: models.CounterStats{Packets: 0, Bytes: 0}, // Not available per-interface
+		}, nil
 	}
 
-	return d.parseInterfaceCounters(out.String()), nil
+	return nil, fmt.Errorf("interface %q not found in /proc/net/dev", iface)
 }
 
-// parseInterfaceCounters parses the verbose output of `iptables -L -v -n`.
-func (d *IptablesDriver) parseInterfaceCounters(raw string) models.CounterStats {
-	lines := strings.Split(raw, "\n")
-	var totalPkts, totalBytes uint64
-
-	// Skip header lines
-	for _, line := range lines[2:] {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-
-		pkts, err := strconv.ParseUint(fields[0], 10, 64)
-		if err != nil {
-			d.log.WithError(err).WithField("line", line).Warn("failed to parse packet count")
-			continue
-		}
-		totalPkts += pkts
-
-		bytes, err := strconv.ParseUint(fields[1], 10, 64)
-		if err != nil {
-			d.log.WithError(err).WithField("line", line).Warn("failed to parse byte count")
-			continue
-		}
-		totalBytes += bytes
-	}
-
-	return models.CounterStats{
-		Packets: totalPkts,
-		Bytes:   totalBytes,
-	}
-}
-
-// buildRuleset produces an iptables-save-compatible text block from abstract rules.
-// All values are sanitized before being written — no raw user input ever enters a command.
-func (d *IptablesDriver) buildRuleset(rules []*models.Rule) string {
+// buildRuleset produces an iptables-save-compatible text block from abstract rules, zone policies,
+// and NAT configuration. Both the filter and nat tables are written so they can be applied in one
+// iptables-restore call. All values are sanitized before being written.
+//
+// Architecture:
+//  1. Chain defaults: DROP for INPUT/FORWARD when zones are configured (zones open access per-interface).
+//  2. Loopback is always allowed.
+//  3. Explicit ACL rules fire first — they can ACCEPT/DROP/REJECT before zone defaults.
+//  4. When NAT is enabled, FORWARD rules for ESTABLISHED/RELATED return traffic and per-SNAT-rule
+//     source subnets are inserted before zone policies so NAT traffic is not dropped.
+//  5. Zone-based default policies come last — they catch traffic not matched by any ACL rule.
+//  6. When NAT is enabled, the nat table (POSTROUTING SNAT / PREROUTING DNAT) is appended.
+func (d *IptablesDriver) buildRuleset(rules []*models.Rule, zones []*models.Zone, interfaces []*models.NetworkInterface, cfg *models.FirewallConfig, natRules []*models.NATRule) string {
 	var sb strings.Builder
 
+	// Build zone name → Zone map for quick lookup.
+	zoneMap := make(map[string]*models.Zone, len(zones))
+	for _, z := range zones {
+		zoneMap[z.Name] = z
+	}
+
+	// Collect (sanitized interface name, zone) pairs for enabled interfaces with a known zone.
+	type ifaceZonePair struct {
+		name string
+		zone *models.Zone
+	}
+	var pairs []ifaceZonePair
+	for _, iface := range interfaces {
+		if !iface.Enabled {
+			continue
+		}
+		z, ok := zoneMap[iface.Zone]
+		if !ok {
+			continue
+		}
+		if name := sanitizeInterface(iface.Name); name != "" {
+			pairs = append(pairs, ifaceZonePair{name, z})
+		}
+	}
+
 	sb.WriteString("*filter\n")
-	sb.WriteString(":INPUT ACCEPT [0:0]\n")
+
+	// When zones are active use DROP as the INPUT/FORWARD default — zones open up access.
+	// Without zones fall back to the original permissive defaults so existing behaviour is unchanged.
+	if len(pairs) > 0 {
+		sb.WriteString(":INPUT DROP [0:0]\n")
+	} else {
+		sb.WriteString(":INPUT ACCEPT [0:0]\n")
+	}
 	sb.WriteString(":FORWARD DROP [0:0]\n")
 	sb.WriteString(":OUTPUT ACCEPT [0:0]\n")
 
+	// Loopback is always permitted regardless of zone config.
+	sb.WriteString("-A INPUT  -i lo -j ACCEPT\n")
+	sb.WriteString("-A OUTPUT -o lo -j ACCEPT\n")
+
+	// Explicit ACL rules (higher priority than zone defaults).
 	for _, r := range rules {
 		if !r.Enabled {
 			continue
@@ -513,8 +568,101 @@ func (d *IptablesDriver) buildRuleset(rules []*models.Rule) string {
 		}
 	}
 
+	// NAT FORWARD rules — inserted before zone policies so they are not shadowed by zone DROPs.
+	// When NAT is enabled we must allow:
+	//   (a) return traffic for already-established/related connections (reply packets from the internet)
+	//   (b) new forwarded packets from each SNAT source subnet toward the outgoing interface
+	//   (c) new forwarded packets toward each DNAT internal target so redirected traffic is not dropped
+	natEnabled := cfg != nil && cfg.NATEnabled
+	if natEnabled {
+		sb.WriteString("-A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT\n")
+
+		for _, nr := range natRules {
+			if !nr.Enabled {
+				continue
+			}
+
+			if nr.Type == "SNAT" {
+				src := sanitizeCIDR(nr.SourceIP)
+				iface := sanitizeInterface(nr.OutInterface)
+				if src == "" && iface == "" {
+					continue
+				}
+				var fwdParts []string
+				fwdParts = append(fwdParts, "-A", "FORWARD")
+				if src != "" {
+					fwdParts = append(fwdParts, "-s", src)
+				}
+				if iface != "" {
+					fwdParts = append(fwdParts, "-o", iface)
+				}
+				fwdParts = append(fwdParts, "-j", "ACCEPT")
+				sb.WriteString(strings.Join(fwdParts, " ") + "\n")
+			}
+
+			if nr.Type == "DNAT" {
+				// After PREROUTING rewrites the destination, the packet enters FORWARD with
+				// dst = nattoIP (the internal server). Allow it through.
+				dst := sanitizeNATTargetIP(nr.NATtoIP)
+				iface := sanitizeInterface(nr.InInterface)
+				if dst == "" && iface == "" {
+					continue
+				}
+				var fwdParts []string
+				fwdParts = append(fwdParts, "-A", "FORWARD")
+				if iface != "" {
+					fwdParts = append(fwdParts, "-i", iface)
+				}
+				if dst != "" {
+					fwdParts = append(fwdParts, "-d", dst)
+				}
+				fwdParts = append(fwdParts, "-j", "ACCEPT")
+				sb.WriteString(strings.Join(fwdParts, " ") + "\n")
+			}
+		}
+	}
+
+	// Zone-based default policies — one set of rules per interface/zone pair.
+	// These fire only for traffic that was not already handled by an ACL rule above.
+	for _, p := range pairs {
+		inPolicy := sanitizeZonePolicy(p.zone.InPolicy)
+		outPolicy := sanitizeZonePolicy(p.zone.OutPolicy)
+
+		if inPolicy != "" {
+			sb.WriteString(fmt.Sprintf("-A INPUT   -i %s -j %s\n", p.name, inPolicy))
+			sb.WriteString(fmt.Sprintf("-A FORWARD -i %s -j %s\n", p.name, inPolicy))
+		}
+		if outPolicy != "" {
+			sb.WriteString(fmt.Sprintf("-A OUTPUT  -o %s -j %s\n", p.name, outPolicy))
+			sb.WriteString(fmt.Sprintf("-A FORWARD -o %s -j %s\n", p.name, outPolicy))
+		}
+	}
+
 	sb.WriteString("COMMIT\n")
+
+	// Append the nat table in the same ruleset so both tables are restored atomically.
+	if natEnabled && len(natRules) > 0 {
+		sb.WriteString(d.buildNATRuleset(natRules))
+	} else if natEnabled {
+		// NAT is enabled but no rules yet — emit an empty nat table to clear any stale rules.
+		sb.WriteString("*nat\n")
+		sb.WriteString(":PREROUTING ACCEPT [0:0]\n")
+		sb.WriteString(":INPUT ACCEPT [0:0]\n")
+		sb.WriteString(":OUTPUT ACCEPT [0:0]\n")
+		sb.WriteString(":POSTROUTING ACCEPT [0:0]\n")
+		sb.WriteString("COMMIT\n")
+	}
+
 	return sb.String()
+}
+
+// sanitizeZonePolicy validates that a zone policy value is a safe iptables target.
+func sanitizeZonePolicy(policy string) string {
+	switch policy {
+	case "ACCEPT", "DROP", "REJECT":
+		return policy
+	}
+	return ""
 }
 
 // ruleToIptablesLine converts a Rule to an iptables-restore rule line.
@@ -689,6 +837,25 @@ func sanitizeComment(s string) string {
 		result = result[:128]
 	}
 	return result
+}
+
+// sanitizeNATTargetIP extracts a plain IP address from a value that may contain CIDR notation.
+// iptables --to-source and --to-destination only accept plain IPs (or IP ranges), NOT CIDR.
+// "192.168.209.128/32" → "192.168.209.128", "10.0.0.1" → "10.0.0.1", junk → "".
+func sanitizeNATTargetIP(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Strip CIDR suffix if present (e.g. /32, /24).
+	ip := s
+	if idx := strings.Index(s, "/"); idx != -1 {
+		ip = s[:idx]
+	}
+	// Validate it parses as an IP address.
+	if net.ParseIP(ip) == nil {
+		return ""
+	}
+	return ip
 }
 
 // sanitizeInterface validates interface names (eth0, wlan0, etc.)

@@ -10,7 +10,10 @@ type FirewallDriver interface {
 
 	// Apply atomically replaces the kernel ruleset with the provided rules.
 	// It translates the Rule slice to iptables format and uses iptables-restore.
-	Apply(rules []*models.Rule) error
+	// zones and interfaces are used to generate zone-based per-interface policies.
+	// cfg and natRules are included so NAT forwarding rules and the nat table are
+	// written in the same iptables-restore call as the filter table.
+	Apply(rules []*models.Rule, zones []*models.Zone, interfaces []*models.NetworkInterface, cfg *models.FirewallConfig, natRules []*models.NATRule) error
 
 	// GetCounters returns per-chain/rule packet and byte counters.
 	GetCounters() ([]*models.Counter, error)
@@ -20,6 +23,9 @@ type FirewallDriver interface {
 
 	// GetInterfaceCounters returns counters for a specific interface.
 	GetInterfaceCounters(iface string) (*models.InterfaceCounters, error)
+
+	// GetChainPolicyCounters returns the global chain policy counters (INPUT, OUTPUT, FORWARD).
+	GetChainPolicyCounters() (*models.InterfaceCounters, error)
 
 	// ApplyConfig applies firewall configuration (IP forwarding, etc)
 	ApplyConfig(config *models.FirewallConfig) error

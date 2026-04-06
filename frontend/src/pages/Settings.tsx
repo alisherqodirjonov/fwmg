@@ -11,6 +11,7 @@ export function Settings() {
   const [interfaces, setInterfaces] = useState<NetworkInterface[]>([])
   const [loading, setLoading] = useState(true)
   const [isSavingConfig, setIsSavingConfig] = useState(false)
+  const [isApplyingRules, setIsApplyingRules] = useState(false)
   const [showNATModal, setShowNATModal] = useState(false)
   const [editingNATRule, setEditingNATRule] = useState<NATRule | null>(null)
   const [darkMode, setDarkMode] = useState(
@@ -70,6 +71,20 @@ export function Settings() {
       setConfig(oldConfig) // Revert on failure
     } finally {
       setIsSavingConfig(false)
+    }
+  }
+
+  async function handleApplyRules() {
+    if (isApplyingRules) return
+
+    setIsApplyingRules(true)
+    try {
+      await api.applyRules()
+      toast.success('Rules applied to kernel successfully')
+    } catch (error) {
+      toast.error(`Apply failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsApplyingRules(false)
     }
   }
 
@@ -207,6 +222,19 @@ export function Settings() {
               <p className="text-xs font-medium text-amber-800 dark:text-amber-200">⚠ Warning: NAT requires IP Forwarding to be enabled to function correctly.</p>
             </div>
           )}
+
+          <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+            <button
+              onClick={handleApplyRules}
+              disabled={isApplyingRules}
+              className="btn-primary w-full"
+            >
+              {isApplyingRules ? 'Applying...' : '✓ Apply Configuration to Kernel'}
+            </button>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 text-center">
+              Changes to IP Forwarding, NAT, and rules are applied to the live firewall kernel when you click this button
+            </p>
+          </div>
         </div>
       </div>
 

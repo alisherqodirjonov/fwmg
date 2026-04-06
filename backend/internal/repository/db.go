@@ -55,6 +55,9 @@ func Migrate(db *sql.DB) error {
 			zone        TEXT NOT NULL DEFAULT 'public',
 			enabled     INTEGER NOT NULL DEFAULT 1,
 			notes       TEXT NOT NULL DEFAULT '',
+			ip          TEXT NOT NULL DEFAULT '',
+			mask        TEXT NOT NULL DEFAULT '',
+			gateway     TEXT NOT NULL DEFAULT '',
 			created_at  DATETIME NOT NULL,
 			updated_at  DATETIME NOT NULL
 		);
@@ -90,5 +93,34 @@ func Migrate(db *sql.DB) error {
 			updated_at      DATETIME NOT NULL
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add columns to network_interfaces if they don't exist (for existing databases)
+	_, err = db.Exec(`
+		ALTER TABLE network_interfaces ADD COLUMN ip TEXT NOT NULL DEFAULT '' ;
+	`)
+	// Ignore error if column already exists
+	if err != nil && err.Error() != "duplicate column name: ip" {
+		// Column might already exist, which is fine
+	}
+
+	_, err = db.Exec(`
+		ALTER TABLE network_interfaces ADD COLUMN mask TEXT NOT NULL DEFAULT '' ;
+	`)
+	// Ignore error if column already exists
+	if err != nil && err.Error() != "duplicate column name: mask" {
+		// Column might already exist, which is fine
+	}
+
+	_, err = db.Exec(`
+		ALTER TABLE network_interfaces ADD COLUMN gateway TEXT NOT NULL DEFAULT '' ;
+	`)
+	// Ignore error if column already exists - this is expected for backward compatible migrations
+	if err != nil {
+		// Column might already exist, which is fine for existing databases
+	}
+
+	return nil
 }

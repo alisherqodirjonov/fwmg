@@ -7,9 +7,9 @@ import { Settings } from './pages/Settings'
 
 export default function App() {
   return (
-    <div className="flex min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="flex min-h-screen bg-gray-50 dark:bg-gray-950">
       <Sidebar />
-      <main className="flex-1 ml-64">
+      <main className="flex-1 overflow-auto transition-all duration-300">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/rules" element={<RulesPage />} />

@@ -63,7 +63,7 @@ func main() {
 
 	driver := firewall.NewIptablesDriver(log)
 
-	fwService := service.NewFirewallServiceWithConfig(ruleRepo, historyRepo, configRepo, natRuleRepo, driver, log)
+	fwService := service.NewFirewallServiceWithConfig(ruleRepo, historyRepo, configRepo, natRuleRepo, zoneRepo, ifaceRepo, driver, log)
 	configService := service.NewConfigService(configRepo, driver, log)
 	interfaceService := service.NewInterfaceService(ifaceRepo, netDriver, log)
 	zoneService := service.NewZoneService(zoneRepo, log)

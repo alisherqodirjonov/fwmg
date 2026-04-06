@@ -106,8 +106,8 @@ type InterfaceWithStatus struct {
 
 type InterfaceService interface {
 	ListInterfaces(ctx context.Context) ([]InterfaceWithStatus, error)
-	CreateInterface(ctx context.Context, dto CreateInterfaceDTO) (*models.NetworkInterface, error)
-	UpdateInterface(ctx context.Context, id string, dto UpdateInterfaceDTO) (*models.NetworkInterface, error)
+	CreateInterface(ctx context.Context, dto CreateInterfaceDTO) (*InterfaceWithStatus, error)
+	UpdateInterface(ctx context.Context, id string, dto UpdateInterfaceDTO) (*InterfaceWithStatus, error)
 	DeleteInterface(ctx context.Context, id string) error
 }
 
@@ -173,12 +173,26 @@ func (s *interfaceService) ListInterfaces(ctx context.Context) ([]InterfaceWithS
 			dbIface = newIface
 		}
 
-		// Combine data
+		// Combine data - prefer DB values (user's configured intent) for IP/Mask/Gateway.
+		// Fall back to system values only for auto-discovered interfaces that have no DB config.
+		ip := dbIface.IP
+		if ip == "" {
+			ip = sys.IP
+		}
+		mask := dbIface.Mask
+		if mask == "" {
+			mask = sys.Mask
+		}
+		gateway := dbIface.Gateway
+		if gateway == "" {
+			gateway = sys.Gateway
+		}
+
 		result = append(result, InterfaceWithStatus{
 			NetworkInterface: dbIface,
-			IP:               sys.IP,
-			Mask:             sys.Mask,
-			Gateway:          sys.Gateway,
+			IP:               ip,
+			Mask:             mask,
+			Gateway:          gateway,
 			MAC:              sys.MAC,
 		})
 	}
@@ -186,7 +200,7 @@ func (s *interfaceService) ListInterfaces(ctx context.Context) ([]InterfaceWithS
 	return result, nil
 }
 
-func (s *interfaceService) CreateInterface(ctx context.Context, dto CreateInterfaceDTO) (*models.NetworkInterface, error) {
+func (s *interfaceService) CreateInterface(ctx context.Context, dto CreateInterfaceDTO) (*InterfaceWithStatus, error) {
 	now := time.Now()
 	iface := &models.NetworkInterface{
 		ID:        uuid.New().String(),
@@ -194,6 +208,9 @@ func (s *interfaceService) CreateInterface(ctx context.Context, dto CreateInterf
 		Zone:      dto.Zone,
 		Enabled:   dto.Enabled,
 		Notes:     dto.Notes,
+		IP:        dto.IP,
+		Mask:      dto.Mask,
+		Gateway:   dto.Gateway,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -202,10 +219,53 @@ func (s *interfaceService) CreateInterface(ctx context.Context, dto CreateInterf
 		return nil, err
 	}
 
-	return iface, nil
+	// Apply config to system if IP is provided
+	if dto.IP != "" {
+		if err := s.netDriver.ApplyConfig(iface.Name, dto.IP, dto.Mask, dto.Gateway, dto.Enabled); err != nil {
+			s.log.WithError(err).Warn("failed to apply network config to system, but interface saved to DB")
+			// Continue - config is saved, system application may fail
+		}
+	}
+
+	// Fetch fresh system state to return actual applied values
+	sysIfaces, err := s.netDriver.GetInterfaces()
+	if err != nil {
+		s.log.WithError(err).Warn("failed to get system interfaces after create")
+		// Return DB state if system fetch fails
+		return &InterfaceWithStatus{
+			NetworkInterface: iface,
+			IP:               iface.IP,
+			Mask:             iface.Mask,
+			Gateway:          iface.Gateway,
+			MAC:              "",
+		}, nil
+	}
+
+	// Find the interface in system state and return merged result
+	for _, sys := range sysIfaces {
+		if sys.Name == iface.Name {
+			// System is source of truth for actual applied values
+			return &InterfaceWithStatus{
+				NetworkInterface: iface,
+				IP:               sys.IP,
+				Mask:             sys.Mask,
+				Gateway:          sys.Gateway,
+				MAC:              sys.MAC,
+			}, nil
+		}
+	}
+
+	// If not found in system, return DB state
+	return &InterfaceWithStatus{
+		NetworkInterface: iface,
+		IP:               iface.IP,
+		Mask:             iface.Mask,
+		Gateway:          iface.Gateway,
+		MAC:              "",
+	}, nil
 }
 
-func (s *interfaceService) UpdateInterface(ctx context.Context, id string, dto UpdateInterfaceDTO) (*models.NetworkInterface, error) {
+func (s *interfaceService) UpdateInterface(ctx context.Context, id string, dto UpdateInterfaceDTO) (*InterfaceWithStatus, error) {
 	iface, err := s.ifaceRepo.Get(id)
 	if err != nil {
 		return nil, fmt.Errorf("interface not found: %w", err)
@@ -217,19 +277,72 @@ func (s *interfaceService) UpdateInterface(ctx context.Context, id string, dto U
 	if dto.Zone != "" {
 		iface.Zone = dto.Zone
 	}
-	iface.Enabled = dto.Enabled
+	// Only update Enabled if it's explicitly different (true -> false)
+	// Since we can't distinguish if DTO didn't provide it, only set to false if explicitly disabled during edit
+	// For now, preserve existing value unless explicitly changed
+	if dto.Enabled != iface.Enabled {
+		iface.Enabled = dto.Enabled
+	}
 	iface.Notes = dto.Notes
 
-	// Apply config to system
-	if err := s.netDriver.ApplyConfig(iface.Name, dto.IP, dto.Mask, dto.Gateway, dto.Enabled); err != nil {
-		return nil, fmt.Errorf("failed to apply network config: %w", err)
+	// Track original IP before overwriting, so we know whether to flush system addresses
+	originalIP := iface.IP
+
+	// Store IP, Mask, Gateway in the model
+	iface.IP = dto.IP
+	iface.Mask = dto.Mask
+	iface.Gateway = dto.Gateway
+
+	// Apply config to system when:
+	// - a new IP is being set, OR
+	// - the IP is being cleared (dto.IP == "") but the interface had one before (flush system address)
+	if dto.IP != "" || originalIP != "" {
+		if err := s.netDriver.ApplyConfig(iface.Name, dto.IP, dto.Mask, dto.Gateway, iface.Enabled); err != nil {
+			s.log.WithError(err).Warn("failed to apply network config to system, but interface saved to DB")
+			// Continue - config is saved, system application may fail
+		}
 	}
 
 	if err := s.ifaceRepo.Update(iface); err != nil {
 		return nil, err
 	}
 
-	return iface, nil
+	// Fetch fresh system state to return actual applied values
+	sysIfaces, err := s.netDriver.GetInterfaces()
+	if err != nil {
+		s.log.WithError(err).Warn("failed to get system interfaces after update")
+		// Return DB state if system fetch fails
+		return &InterfaceWithStatus{
+			NetworkInterface: iface,
+			IP:               iface.IP,
+			Mask:             iface.Mask,
+			Gateway:          iface.Gateway,
+			MAC:              "",
+		}, nil
+	}
+
+	// Find the interface in system state and return merged result
+	for _, sys := range sysIfaces {
+		if sys.Name == iface.Name {
+			// System is source of truth for actual applied values
+			return &InterfaceWithStatus{
+				NetworkInterface: iface,
+				IP:               sys.IP,
+				Mask:             sys.Mask,
+				Gateway:          sys.Gateway,
+				MAC:              sys.MAC,
+			}, nil
+		}
+	}
+
+	// If not found in system, return DB state
+	return &InterfaceWithStatus{
+		NetworkInterface: iface,
+		IP:               iface.IP,
+		Mask:             iface.Mask,
+		Gateway:          iface.Gateway,
+		MAC:              "",
+	}, nil
 }
 
 func (s *interfaceService) DeleteInterface(ctx context.Context, id string) error {

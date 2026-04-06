@@ -56,6 +56,9 @@ export interface NetworkInterface {
   zone: string
   enabled: boolean
   notes: string
+  ip: string
+  mask: string
+  gateway: string
   createdAt: string
   updatedAt: string
 }
@@ -115,6 +118,9 @@ export interface CreateInterfacePayload {
   zone: string
   enabled: boolean
   notes: string
+  ip: string
+  mask: string
+  gateway: string
 }
 
 export interface UpdateInterfacePayload {
@@ -122,6 +128,9 @@ export interface UpdateInterfacePayload {
   zone: string
   enabled: boolean
   notes: string
+  ip: string
+  mask: string
+  gateway: string
 }
 
 export interface CreateZonePayload {

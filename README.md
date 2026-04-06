@@ -263,3 +263,116 @@ cd frontend && npm install && cd ..
 
 # 3. Download Go modules
 cd backend && go mod tidy && cd ..# fwmg
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Apply failed: apply rules to kernel: iptables-restore failed: exit status 2 — stderr: Bad argument `to'
+Error occurred at line: 20
+Try `iptables-restore -h' or 'iptables-restore --help' for more information.
+
+
+
+=====>>>. it cannot add simple masquarade command to be NAT(source NAT), ip forwarding is enabled but when i write snat rule it does not even add iptables tules to nat tbale
+
+proxy-user@proxy-ubuntu:~/projects/firewall-manager$ sudo iptables -t nat -L -n -v
+Chain PREROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain INPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination    
+
+
+==>>> written rule to be SNAT on web ui
+SNAT Rules (Source NAT)
+Modify source IP of outgoing packets. Example: Internal traffic appears to come from firewall's external IP.
+
+Add SNAT Rule
+Name	Protocol	Source IP → NAT To	Status	Actions
+lan to internet
+lan to internet
+all	
+192.168.10.0/24 → 192.168.209.128/32
+:any → :any
+Enabled	EditDelete
+
+
+
+
+
+
+{"ip":"127.0.0.1","latency":11635314,"level":"info","method":"POST","msg":"request","path":"/api/config","status":200,"time":"2026-04-06T05:04:58+01:00"}
+{"ip_forwarding":true,"level":"info","msg":"IP forwarding configuration applied successfully","time":"2026-04-06T05:13:20+01:00"}
+{"ip_forwarding":true,"level":"info","msg":"firewall configuration updated and applied successfully","nat_enabled":false,"time":"2026-04-06T05:13:20+01:00"}
+{"ip":"192.168.209.1","latency":4463255,"level":"info","method":"POST","msg":"request","path":"/api/config","status":200,"time":"2026-04-06T05:13:20+01:00"}
+{"ip_forwarding":true,"level":"info","msg":"IP forwarding configuration applied successfully","time":"2026-04-06T05:13:31+01:00"}
+{"ip_forwarding":true,"level":"info","msg":"firewall configuration updated and applied successfully","nat_enabled":true,"time":"2026-04-06T05:13:31+01:00"}
+{"ip":"192.168.209.1","latency":3824825,"level":"info","method":"POST","msg":"request","path":"/api/config","status":200,"time":"2026-04-06T05:13:31+01:00"}
+{"ip":"192.168.209.1","latency":425566,"level":"info","method":"DELETE","msg":"request","path":"/api/nat-rules/a067b50c-de26-4782-8013-bd76e914488d","status":200,"time":"2026-04-06T05:13:42+01:00"}
+{"ip":"192.168.209.1","latency":1426645,"level":"info","method":"POST","msg":"request","path":"/api/nat-rules","status":201,"time":"2026-04-06T05:14:28+01:00"}
+{"dnat_rules":0,"level":"info","msg":"NAT ruleset built successfully","snat_rules":1,"time":"2026-04-06T05:14:39+01:00","total":1}
+{"level":"debug","msg":"applying ruleset","ruleset_lines":21,"time":"2026-04-06T05:14:39+01:00"}
+{"error":"apply rules to kernel: iptables-restore failed: exit status 2 — stderr: Bad argument `to'\nError occurred at line: 20\nTry `iptables-restore -h' or 'iptables-restore --help' for more information.\n","level":"error","msg":"apply rules failed","time":"2026-04-06T05:14:39+01:00"}
+{"ip":"192.168.209.1","latency":126149203,"level":"error","method":"POST","msg":"server error","path":"/api/apply","status":500,"time":"2026-04-06T05:14:39+01:00"}

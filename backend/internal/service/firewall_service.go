@@ -54,12 +54,14 @@ type FirewallService interface {
 }
 
 type firewallService struct {
-	rules    repository.RuleRepository
-	history  repository.HistoryRepository
-	config   repository.ConfigRepository
-	natRules repository.NATRuleRepository
-	driver   firewall.FirewallDriver
-	log      *logrus.Logger
+	rules      repository.RuleRepository
+	history    repository.HistoryRepository
+	config     repository.ConfigRepository
+	natRules   repository.NATRuleRepository
+	zones      repository.ZoneRepository
+	interfaces repository.InterfaceRepository
+	driver     firewall.FirewallDriver
+	log        *logrus.Logger
 }
 
 func NewFirewallService(
@@ -81,16 +83,20 @@ func NewFirewallServiceWithConfig(
 	history repository.HistoryRepository,
 	config repository.ConfigRepository,
 	natRules repository.NATRuleRepository,
+	zones repository.ZoneRepository,
+	interfaces repository.InterfaceRepository,
 	driver firewall.FirewallDriver,
 	log *logrus.Logger,
 ) FirewallService {
 	return &firewallService{
-		rules:    rules,
-		history:  history,
-		config:   config,
-		natRules: natRules,
-		driver:   driver,
-		log:      log,
+		rules:      rules,
+		history:    history,
+		config:     config,
+		natRules:   natRules,
+		zones:      zones,
+		interfaces: interfaces,
+		driver:     driver,
+		log:        log,
 	}
 }
 
@@ -178,27 +184,48 @@ func (s *firewallService) ApplyRules(_ context.Context) error {
 		return fmt.Errorf("load rules from db: %w", err)
 	}
 
-	if err := s.driver.Apply(rules); err != nil {
-		return fmt.Errorf("apply rules to kernel: %w", err)
-	}
-
-	// Apply firewall configuration (IP forwarding, etc.)
-	if s.config != nil {
-		cfg, err := s.config.Get()
+	// Load zones and interfaces so zone-based policies are included in the ruleset.
+	var zones []*models.Zone
+	var ifaces []*models.NetworkInterface
+	if s.zones != nil {
+		zones, err = s.zones.List()
 		if err != nil {
-			s.log.WithError(err).Warn("could not load firewall config")
-		} else if err := s.driver.ApplyConfig(cfg); err != nil {
-			s.log.WithError(err).Warn("failed to apply firewall config")
+			s.log.WithError(err).Warn("could not load zones for apply")
+		}
+	}
+	if s.interfaces != nil {
+		ifaces, err = s.interfaces.List()
+		if err != nil {
+			s.log.WithError(err).Warn("could not load interfaces for apply")
 		}
 	}
 
-	// Apply NAT rules if enabled
-	if s.natRules != nil {
-		natRules, err := s.natRules.List()
+	// Load firewall config and NAT rules so they are included in the same atomic
+	// iptables-restore call as the filter rules (avoids a second restore wiping the first).
+	var cfg *models.FirewallConfig
+	var natRules []*models.NATRule
+	if s.config != nil {
+		cfg, err = s.config.Get()
+		if err != nil {
+			s.log.WithError(err).Warn("could not load firewall config")
+		}
+	}
+	if s.natRules != nil && cfg != nil && cfg.NATEnabled {
+		natRules, err = s.natRules.List()
 		if err != nil {
 			s.log.WithError(err).Warn("could not load NAT rules")
-		} else if err := s.driver.ApplyNAT(natRules); err != nil {
-			s.log.WithError(err).Warn("failed to apply NAT rules")
+		}
+	}
+
+	// Single atomic apply: filter rules + NAT FORWARD rules + nat table in one iptables-restore.
+	if err := s.driver.Apply(rules, zones, ifaces, cfg, natRules); err != nil {
+		return fmt.Errorf("apply rules to kernel: %w", err)
+	}
+
+	// Apply sysctl settings (IP forwarding).
+	if cfg != nil {
+		if err := s.driver.ApplyConfig(cfg); err != nil {
+			s.log.WithError(err).Warn("failed to apply firewall config")
 		}
 	}
 
@@ -280,26 +307,5 @@ func (s *firewallService) GetInterfaceCounters(_ context.Context, iface string) 
 }
 
 func (s *firewallService) GetAggregatedCounters(ctx context.Context) (*models.InterfaceCounters, error) {
-	interfaces, err := s.driver.GetInterfaces()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get interfaces for aggregation: %w", err)
-	}
-
-	totalCounters := &models.InterfaceCounters{}
-
-	for _, iface := range interfaces {
-		counters, err := s.driver.GetInterfaceCounters(iface.Name)
-		if err != nil {
-			s.log.WithError(err).WithField("interface", iface.Name).Warn("failed to get counters for interface")
-			continue
-		}
-		totalCounters.In.Packets += counters.In.Packets
-		totalCounters.In.Bytes += counters.In.Bytes
-		totalCounters.Out.Packets += counters.Out.Packets
-		totalCounters.Out.Bytes += counters.Out.Bytes
-		totalCounters.Drop.Packets += counters.Drop.Packets
-		totalCounters.Drop.Bytes += counters.Drop.Bytes
-	}
-
-	return totalCounters, nil
+	return s.driver.GetChainPolicyCounters()
 }

@@ -3,6 +3,7 @@ package network
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -86,6 +87,24 @@ func (d *NetlinkDriver) GetInterfaces() ([]Info, error) {
 	return interfaces, nil
 }
 
+// normalizeMask converts a dotted-decimal mask (e.g., "255.255.255.0") to a
+// CIDR prefix length (e.g., "24"). Already-numeric values are returned as-is.
+func normalizeMask(mask string) string {
+	if !strings.Contains(mask, ".") {
+		return mask
+	}
+	ip := net.ParseIP(mask)
+	if ip == nil {
+		return mask
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return mask
+	}
+	ones, _ := net.IPMask(ip4).Size()
+	return fmt.Sprintf("%d", ones)
+}
+
 // ApplyConfig applies IP/mask/gateway configuration to an interface.
 // NOTE: This requires the application to run with CAP_NET_ADMIN capabilities.
 func (d *NetlinkDriver) ApplyConfig(ifaceName, ip, mask, gateway string, enabled bool) error {
@@ -116,7 +135,7 @@ func (d *NetlinkDriver) ApplyConfig(ifaceName, ip, mask, gateway string, enabled
 	}
 
 	if ip != "" && mask != "" {
-		addrStr := fmt.Sprintf("%s/%s", ip, mask)
+		addrStr := fmt.Sprintf("%s/%s", ip, normalizeMask(mask))
 		addr, err := netlink.ParseAddr(addrStr)
 		if err != nil {
 			return fmt.Errorf("failed to parse address %s: %w", addrStr, err)

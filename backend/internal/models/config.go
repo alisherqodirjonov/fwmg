@@ -18,6 +18,9 @@ type NetworkInterface struct {
 	Zone      string    `json:"zone" db:"zone"` // e.g., public, private, dmz
 	Enabled   bool      `json:"enabled" db:"enabled"`
 	Notes     string    `json:"notes" db:"notes"`
+	IP        string    `json:"ip" db:"ip"`           // IP address
+	Mask      string    `json:"mask" db:"mask"`       // Network mask (e.g., 255.255.255.0)
+	Gateway   string    `json:"gateway" db:"gateway"` // Gateway IP address
 	CreatedAt time.Time `json:"createdAt" db:"created_at"`
 	UpdatedAt time.Time `json:"updatedAt" db:"updated_at"`
 }

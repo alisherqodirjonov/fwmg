@@ -79,7 +79,7 @@ func NewInterfaceRepository(db *sql.DB) InterfaceRepository {
 
 func (r *interfaceRepository) List() ([]*models.NetworkInterface, error) {
 	rows, err := r.db.Query(`
-		SELECT id, name, zone, enabled, notes, created_at, updated_at
+		SELECT id, name, zone, enabled, notes, ip, mask, gateway, created_at, updated_at
 		FROM network_interfaces
 		ORDER BY name
 	`)
@@ -91,7 +91,7 @@ func (r *interfaceRepository) List() ([]*models.NetworkInterface, error) {
 	var interfaces []*models.NetworkInterface
 	for rows.Next() {
 		iface := &models.NetworkInterface{}
-		if err := rows.Scan(&iface.ID, &iface.Name, &iface.Zone, &iface.Enabled, &iface.Notes, &iface.CreatedAt, &iface.UpdatedAt); err != nil {
+		if err := rows.Scan(&iface.ID, &iface.Name, &iface.Zone, &iface.Enabled, &iface.Notes, &iface.IP, &iface.Mask, &iface.Gateway, &iface.CreatedAt, &iface.UpdatedAt); err != nil {
 			return nil, err
 		}
 		interfaces = append(interfaces, iface)
@@ -101,21 +101,21 @@ func (r *interfaceRepository) List() ([]*models.NetworkInterface, error) {
 
 func (r *interfaceRepository) Get(id string) (*models.NetworkInterface, error) {
 	row := r.db.QueryRow(`
-		SELECT id, name, zone, enabled, notes, created_at, updated_at
+		SELECT id, name, zone, enabled, notes, ip, mask, gateway, created_at, updated_at
 		FROM network_interfaces
 		WHERE id = ?
 	`, id)
 
 	iface := &models.NetworkInterface{}
-	err := row.Scan(&iface.ID, &iface.Name, &iface.Zone, &iface.Enabled, &iface.Notes, &iface.CreatedAt, &iface.UpdatedAt)
+	err := row.Scan(&iface.ID, &iface.Name, &iface.Zone, &iface.Enabled, &iface.Notes, &iface.IP, &iface.Mask, &iface.Gateway, &iface.CreatedAt, &iface.UpdatedAt)
 	return iface, err
 }
 
 func (r *interfaceRepository) Create(iface *models.NetworkInterface) error {
 	_, err := r.db.Exec(`
-		INSERT INTO network_interfaces (id, name, zone, enabled, notes, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, iface.ID, iface.Name, iface.Zone, iface.Enabled, iface.Notes, iface.CreatedAt, iface.UpdatedAt)
+		INSERT INTO network_interfaces (id, name, zone, enabled, notes, ip, mask, gateway, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, iface.ID, iface.Name, iface.Zone, iface.Enabled, iface.Notes, iface.IP, iface.Mask, iface.Gateway, iface.CreatedAt, iface.UpdatedAt)
 	return err
 }
 
@@ -123,9 +123,9 @@ func (r *interfaceRepository) Update(iface *models.NetworkInterface) error {
 	iface.UpdatedAt = time.Now()
 	_, err := r.db.Exec(`
 		UPDATE network_interfaces
-		SET name = ?, zone = ?, enabled = ?, notes = ?, updated_at = ?
+		SET name = ?, zone = ?, enabled = ?, notes = ?, ip = ?, mask = ?, gateway = ?, updated_at = ?
 		WHERE id = ?
-	`, iface.Name, iface.Zone, iface.Enabled, iface.Notes, iface.UpdatedAt, iface.ID)
+	`, iface.Name, iface.Zone, iface.Enabled, iface.Notes, iface.IP, iface.Mask, iface.Gateway, iface.UpdatedAt, iface.ID)
 	return err
 }
 

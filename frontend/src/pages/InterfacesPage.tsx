@@ -5,12 +5,6 @@ import { api } from '../services/api'
 import { Modal } from '../components/Modal'
 import type { NetworkInterface, Zone, PolicyType } from '../types'
 
-interface ExtendedNetworkInterface extends NetworkInterface {
-  ip?: string
-  mask?: string
-  gateway?: string
-}
-
 export function InterfacesPage() {
   const [interfaces, setInterfaces] = useState<NetworkInterface[]>([])
   const [zones, setZones] = useState<Zone[]>([])
@@ -67,7 +61,7 @@ export function InterfacesPage() {
       }
 
       if (editingInterface) {
-        const updated = await api.updateInterface(editingInterface.id, {
+        await api.updateInterface(editingInterface.id, {
           name: formData.name,
           zone: formData.zone,
           enabled: formData.enabled,
@@ -75,10 +69,22 @@ export function InterfacesPage() {
           ip: formData.ip,
           mask: formData.mask,
           gateway: formData.gateway,
-        } as any)
-        setInterfaces(interfaces.map((i) => (i.id === updated.id ? updated : i)))
-        toast.success('Interface updated')
+        })
+      } else {
+        await api.createInterface({
+          name: formData.name,
+          zone: formData.zone,
+          enabled: formData.enabled,
+          notes: formData.notes,
+          ip: formData.ip,
+          mask: formData.mask,
+          gateway: formData.gateway,
+        })
       }
+      // Reload interfaces to show actual applied state from system
+      const updated = await api.getInterfaces()
+      setInterfaces(updated)
+      toast.success(editingInterface ? 'Interface updated and configuration applied' : 'Interface created')
       resetForm()
       setShowModal(false)
     } catch (error) {
@@ -145,16 +151,15 @@ export function InterfacesPage() {
   }
 
   function openEditInterface(iface: NetworkInterface) {
-    const extendedIface = iface as ExtendedNetworkInterface
     setEditingInterface(iface)
     setFormData({
       name: iface.name,
       zone: iface.zone,
       enabled: iface.enabled,
       notes: iface.notes,
-      ip: extendedIface.ip || '',
-      mask: extendedIface.mask || '',
-      gateway: extendedIface.gateway || '',
+      ip: iface.ip || '',
+      mask: iface.mask || '',
+      gateway: iface.gateway || '',
     })
     setShowModal(true)
   }
@@ -180,104 +185,16 @@ export function InterfacesPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-          <Network size={32} className="text-blue-600" />
-          Interface Management
-        </h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Configure network interfaces and firewall zones</p>
-      </div>
-
-      {/* Zones Section */}
-      <div className="card p-6 space-y-4">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
+      {/* Header */}
+      <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-8 py-6 sticky top-0 z-10">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Firewall Zones</h2>
-            <p className="text-sm text-gray-500 mt-1">Define zone policies for network segmentation</p>
-          </div>
-          <button
-            onClick={() => {
-              resetZoneForm()
-              setShowZoneModal(true)
-            }}
-            className="btn-primary flex items-center gap-2"
-          >
-            <Plus size={16} />
-            Add Zone
-          </button>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="border-b border-gray-200 dark:border-gray-700">
-              <tr>
-                <th className="text-left py-2 px-4 font-semibold text-gray-700 dark:text-gray-300">Name</th>
-                <th className="text-left py-2 px-4 font-semibold text-gray-700 dark:text-gray-300">Target</th>
-                <th className="text-left py-2 px-4 font-semibold text-gray-700 dark:text-gray-300">In Policy</th>
-                <th className="text-left py-2 px-4 font-semibold text-gray-700 dark:text-gray-300">Out Policy</th>
-                <th className="text-left py-2 px-4 font-semibold text-gray-700 dark:text-gray-300">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {zones.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="text-center py-4 text-gray-500">
-                    No zones defined
-                  </td>
-                </tr>
-              ) : (
-                zones.map((zone) => (
-                  <tr key={zone.id} className="border-b border-gray-200 dark:border-gray-700">
-                    <td className="py-3 px-4">
-                      <div className="font-medium text-gray-900 dark:text-gray-100">{zone.name}</div>
-                      {zone.description && (
-                        <div className="text-xs text-gray-500">{zone.description}</div>
-                      )}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className="badge badge-info">{zone.target}</span>
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`badge ${zone.inPolicy === 'ACCEPT' ? 'badge-success' : 'badge-error'}`}>
-                        {zone.inPolicy}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`badge ${zone.outPolicy === 'ACCEPT' ? 'badge-success' : 'badge-error'}`}>
-                        {zone.outPolicy}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 space-x-2">
-                      <button
-                        onClick={() => openEditZone(zone)}
-                        className="btn-sm btn-secondary inline-flex items-center gap-1"
-                      >
-                        <Edit2 size={14} />
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleDeleteZone(zone.id)}
-                        className="btn-sm btn-error inline-flex items-center gap-1"
-                      >
-                        <Trash2 size={14} />
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Interfaces Section */}
-      <div className="card p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Network Interfaces</h2>
-            <p className="text-sm text-gray-500 mt-1">Manage and assign interfaces to zones</p>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-3">
+              <Network size={32} className="text-blue-600" />
+              Interface Management
+            </h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Configure network interfaces and firewall zones</p>
           </div>
           <button
             onClick={loadData}
@@ -288,60 +205,223 @@ export function InterfacesPage() {
             Refresh
           </button>
         </div>
+      </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Main Content */}
+      <div className="flex-1 px-8 py-6 space-y-8">
+        {/* Zones Section */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Firewall Zones</h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define zone policies for network segmentation</p>
+            </div>
+            <button
+              onClick={() => {
+                resetZoneForm()
+                setShowZoneModal(true)
+              }}
+              className="btn-primary flex items-center gap-2"
+            >
+              <Plus size={16} />
+              Add Zone
+            </button>
+          </div>
+
+          <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-700">
+                  <tr>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Name</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Target</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">In Policy</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Out Policy</th>
+                    <th className="text-right py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {zones.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="text-center py-6 text-gray-500 dark:text-gray-400">
+                        No zones defined
+                      </td>
+                    </tr>
+                  ) : (
+                    zones.map((zone) => (
+                      <tr key={zone.id} className="border-b border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+                        <td className="py-3 px-4">
+                          <div className="font-medium text-gray-900 dark:text-gray-100">{zone.name}</div>
+                          {zone.description && (
+                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{zone.description}</div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+                            {zone.target}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${
+                              zone.inPolicy === 'ACCEPT'
+                                ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                                : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
+                            }`}
+                          >
+                            {zone.inPolicy}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${
+                              zone.outPolicy === 'ACCEPT'
+                                ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                                : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
+                            }`}
+                          >
+                            {zone.outPolicy}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right space-x-1">
+                          <button
+                            onClick={() => openEditZone(zone)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                          >
+                            <Edit2 size={12} />
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteZone(zone.id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
+                          >
+                            <Trash2 size={12} />
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        {/* Interfaces Section - Redesigned */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Network Interfaces</h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Manage and assign interfaces to zones</p>
+            </div>
+            <button
+              onClick={() => {
+                resetForm()
+                setShowModal(true)
+              }}
+              className="btn-primary flex items-center gap-2"
+            >
+              <Plus size={16} />
+              Add Interface
+            </button>
+          </div>
+
           {interfaces.length === 0 ? (
-            <div className="col-span-full text-center py-8 text-gray-500">
-              No interfaces configured
+            <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 py-12 text-center">
+              <Network size={32} className="mx-auto text-gray-400 mb-3" />
+              <p className="text-gray-500 dark:text-gray-400">No interfaces configured</p>
             </div>
           ) : (
-            interfaces.map((iface) => {
-              const extendedIface = iface as ExtendedNetworkInterface
-              const zone = zones.find((z) => z.name === iface.zone)
-              return (
-                <div key={iface.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:shadow-md transition-shadow">
-                  <div className="space-y-3">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <h3 className="font-semibold text-gray-900 dark:text-gray-100">{iface.name}</h3>
-                        <div className="text-xs text-blue-600 dark:text-blue-400 font-mono mt-0.5">
-                          {extendedIface.ip ? `${extendedIface.ip}/${extendedIface.mask}` : 'No IP assigned'}
-                        </div>
-                        {extendedIface.gateway && (
-                          <div className="text-xs text-gray-500 font-mono mt-0.5">
-                            GW: {extendedIface.gateway}
-                          </div>
-                        )}
-                        {iface.notes && (
-                          <p className="text-xs text-gray-500 mt-1">{iface.notes}</p>
-                        )}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {interfaces.map((iface) => {
+                const zone = zones.find((z) => z.name === iface.zone)
+                return (
+                  <div
+                    key={iface.id}
+                    className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800 hover:border-blue-300 dark:hover:border-blue-700 shadow-sm hover:shadow-md transition-all overflow-hidden"
+                  >
+                    {/* Card Header */}
+                    <div className="bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 px-4 py-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-sm text-gray-900 dark:text-gray-100">{iface.name}</h3>
+                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5 font-mono">
+                          {iface.ip ? `${iface.ip}/${iface.mask}` : 'DHCP'}
+                        </p>
                       </div>
-                      <span className={`badge ${iface.enabled ? 'badge-success' : 'badge-warning'}`}>
-                        {iface.enabled ? 'Enabled' : 'Disabled'}
+                      <span
+                        className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ml-2 ${
+                          iface.enabled
+                            ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                            : 'bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        {iface.enabled ? '●' : '○'} {iface.enabled ? 'Active' : 'Disabled'}
                       </span>
                     </div>
-                    <div>
-                      <div className="text-xs text-gray-500">Zone:</div>
-                      <div className="font-medium text-gray-900 dark:text-gray-100">{iface.zone}</div>
+
+                    {/* Card Body */}
+                    <div className="px-4 py-3 space-y-2">
+                      {/* Zone Info */}
+                      <div className="flex items-start justify-between text-xs">
+                        <span className="text-gray-600 dark:text-gray-400">Zone:</span>
+                        <span className="font-medium text-gray-900 dark:text-gray-100">{iface.zone}</span>
+                      </div>
+
+                      {/* Gateway */}
+                      {iface.gateway && (
+                        <div className="flex items-start justify-between text-xs">
+                          <span className="text-gray-600 dark:text-gray-400">Gateway:</span>
+                          <span className="font-mono text-gray-900 dark:text-gray-100">{iface.gateway}</span>
+                        </div>
+                      )}
+
+                      {/* Policy */}
                       {zone && (
-                        <div className="text-xs text-gray-500 mt-1">
-                          Policy: {zone.inPolicy} (in) / {zone.outPolicy} (out)
+                        <div className="flex items-start justify-between text-xs">
+                          <span className="text-gray-600 dark:text-gray-400">Policy:</span>
+                          <span className="text-gray-900 dark:text-gray-100">
+                            <span className="inline-block mr-1">
+                              {zone.inPolicy === 'ACCEPT' ? (
+                                <span className="text-green-600 dark:text-green-400">✓</span>
+                              ) : (
+                                <span className="text-red-600 dark:text-red-400">✕</span>
+                              )}
+                            </span>
+                            {zone.inPolicy}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Notes */}
+                      {iface.notes && (
+                        <div className="pt-1 border-t border-gray-200 dark:border-gray-800">
+                          <p className="text-xs text-gray-600 dark:text-gray-400 italic">{iface.notes}</p>
                         </div>
                       )}
                     </div>
-                    <div className="flex gap-2 pt-2">
+
+                    {/* Card Footer - Actions */}
+                    <div className="bg-gray-50 dark:bg-gray-800/50 px-4 py-3 border-t border-gray-200 dark:border-gray-800 flex gap-2">
                       <button
                         onClick={() => openEditInterface(iface)}
-                        className="btn-sm btn-secondary flex-1 inline-flex items-center justify-center gap-1"
+                        className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-900/50 transition-colors"
                       >
-                        <Edit2 size={14} />
+                        <Edit2 size={13} />
                         Edit
+                      </button>
+                      <button
+                        onClick={() => openEditInterface(iface)}
+                        className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded text-xs font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                      >
+                        <RefreshCw size={13} />
+                        Status
                       </button>
                     </div>
                   </div>
-                </div>
-              )
-            })
+                )
+              })}
+            </div>
           )}
         </div>
       </div>
@@ -359,9 +439,9 @@ export function InterfacesPage() {
           <div>
             <label className="label">Interface Name</label>
             <input
-              disabled
+              disabled={!!editingInterface}
               type="text"
-              className="input opacity-75 cursor-not-allowed"
+              className={`input ${editingInterface ? 'opacity-75 cursor-not-allowed' : ''}`}
               placeholder="e.g., eth0, wlan0"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
